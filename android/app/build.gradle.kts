@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.manhwa_toolkit"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
