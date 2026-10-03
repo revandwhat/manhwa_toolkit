@@ -9,7 +9,7 @@ class TextItem {
 
   final String original;
   final String translated;
-  final String kind; // bubble | narration | sfx
+  final String kind;
 
   factory TextItem.fromJson(Map<String, dynamic> j) => TextItem(
         original: (j['original'] ?? '').toString(),
@@ -19,8 +19,6 @@ class TextItem {
 }
 
 class GeminiService {
-  // If the API ever returns 404 for the model, use the new model name
-  // printed inside the error message.
   static const _model = 'gemini-3.8-flash';
   static const _url =
       'https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent';
@@ -33,23 +31,13 @@ class GeminiService {
     await p.setString('gemini_key', key.trim());
   }
 
-  /// One vision call: finds every text in the panel AND translates it.
-  Future<List<TextItem>> ocrTranslate(
+  Future<String> _vision(
     Uint8List imageBytes, {
     required String mime,
-    required String lang,
+    required String prompt,
   }) async {
     final key = await getKey();
     if (key == null || key.isEmpty) throw Exception('NO_KEY');
-
-    final prompt = 'You are a professional manhwa/manga translator.\n'
-        'Find every piece of text in this comic panel: speech bubbles, '
-        'narration boxes, sound effects, text on signs or screens.\n'
-        'For each piece give the original text and its translation into $lang.\n'
-        'Return ONLY a JSON array, no markdown fences:\n'
-        '[{"original":"...","translated":"...","kind":"bubble|narration|sfx"}]\n'
-        'If there is no text at all, return [].';
-
     final res = await http.post(
       Uri.parse('$_url?key=$key'),
       headers: {'Content-Type': 'application/json'},
@@ -70,16 +58,47 @@ class GeminiService {
         },
       }),
     );
-
     if (res.statusCode != 200) {
       throw Exception('API ${res.statusCode}: ${res.body}');
     }
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     final cands = data['candidates'] as List?;
-    if (cands == null || cands.isEmpty) return [];
+    if (cands == null || cands.isEmpty) return '';
     final parts = cands[0]['content']['parts'] as List;
-    final text = ((parts[0] as Map)['text'] ?? '') as String;
-    final cleaned = text.replaceAll('```json', '').replaceAll('```', '').trim();
+    return ((parts[0] as Map)['text'] ?? '').toString();
+  }
+
+  /// OCR tool: ALL text found in the image, original language, order kept.
+  Future<String> extractText(Uint8List imageBytes, {required String mime}) async {
+    final raw = await _vision(imageBytes, mime: mime,
+        prompt: 'Extract ALL text visible in this comic image: speech bubbles, '
+            'narration boxes, sound effects, signs, screens. Keep the reading '
+            'order and line breaks. Do not translate. Return ONLY JSON: '
+            '{"text":"..."} with \\n for line breaks.');
+    final cleaned = raw.replaceAll('```json', '').replaceAll('```', '').trim();
+    if (cleaned.isEmpty) return '';
+    try {
+      final d = jsonDecode(cleaned) as Map<String, dynamic>;
+      return (d['text'] ?? '').toString();
+    } catch (_) {
+      return cleaned;
+    }
+  }
+
+  /// Kept for the future clean/typeset phases.
+  Future<List<TextItem>> ocrTranslate(
+    Uint8List imageBytes, {
+    required String mime,
+    required String lang,
+  }) async {
+    final raw = await _vision(imageBytes, mime: mime,
+        prompt: 'You are a professional manhwa/manga translator.\n'
+            'Find every piece of text in this comic panel and translate into $lang.\n'
+            'Return ONLY a JSON array, no markdown fences:\n'
+            '[{"original":"...","translated":"...","kind":"bubble|narration|sfx"}]\n'
+            'If there is no text at all, return [].');
+    final cleaned = raw.replaceAll('```json', '').replaceAll('```', '').trim();
+    if (cleaned.isEmpty) return [];
     final list = jsonDecode(cleaned) as List;
     return list
         .map((e) => TextItem.fromJson(e as Map<String, dynamic>))

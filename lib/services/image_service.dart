@@ -6,10 +6,10 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
-/// Runs inside a background isolate (via compute) so the UI never freezes.
+/// Runs in a background isolate. NO resampling: panels are composited at
+/// their native pixels; canvas width = widest panel; left-aligned.
 List<Uint8List> _stitchIsolate(Map<String, dynamic> args) {
   final paths = (args['paths'] as List).cast<String>();
-  final targetW = args['width'] as int; // 0 = auto (widest panel)
   final jpg = args['jpg'] as bool;
   final quality = args['quality'] as int;
   final splitH = args['split'] as int; // 0 = no split
@@ -17,25 +17,16 @@ List<Uint8List> _stitchIsolate(Map<String, dynamic> args) {
   Uint8List encode(img.Image im) =>
       jpg ? img.encodeJpg(im, quality: quality) : img.encodePng(im);
 
-  var w = targetW;
-  if (w <= 0) {
-    for (final p in paths) {
-      final im = img.decodeImage(File(p).readAsBytesSync());
-      if (im == null) continue;
-      if (im.width > w) w = im.width;
-    }
-  }
-  if (w <= 0) throw Exception('No readable images');
-
+  var w = 0;
   final pieces = <img.Image>[];
   for (final p in paths) {
     final im = img.decodeImage(File(p).readAsBytesSync());
     if (im == null) continue;
-    pieces.add(im.width == w ? im : img.copyResize(im, width: w));
+    if (im.width > w) w = im.width;
+    pieces.add(im);
   }
-  if (pieces.isEmpty) throw Exception('No readable images');
+  if (w <= 0 || pieces.isEmpty) throw Exception('No readable images');
 
-  // No split: one tall canvas
   if (splitH <= 0) {
     var total = 0;
     for (final p in pieces) {
@@ -50,7 +41,7 @@ List<Uint8List> _stitchIsolate(Map<String, dynamic> args) {
     return [encode(canvas)];
   }
 
-  // Split mode: fixed-height parts, pieces that span two parts get cut
+  // Split mode: fixed-height parts; pieces spanning two parts get cut.
   final parts = <Uint8List>[];
   var cur = img.Image(width: w, height: splitH);
   var y = 0;
@@ -64,8 +55,8 @@ List<Uint8List> _stitchIsolate(Map<String, dynamic> args) {
         piece = null;
       } else {
         if (remaining > 0) {
-          final top =
-              img.copyCrop(piece, x: 0, y: 0, width: w, height: remaining);
+          final top = img.copyCrop(piece,
+              x: 0, y: 0, width: piece.width, height: remaining);
           img.compositeImage(cur, top, dstX: 0, dstY: y);
         }
         parts.add(encode(cur));
@@ -73,7 +64,8 @@ List<Uint8List> _stitchIsolate(Map<String, dynamic> args) {
         y = 0;
         final left = piece.height - remaining;
         piece = left > 0
-            ? img.copyCrop(piece, x: 0, y: remaining, width: w, height: left)
+            ? img.copyCrop(
+                piece, x: 0, y: remaining, width: piece.width, height: left)
             : null;
       }
     }
@@ -88,14 +80,12 @@ List<Uint8List> _stitchIsolate(Map<String, dynamic> args) {
 class ImageService {
   static Future<List<Uint8List>> stitch({
     required List<String> paths,
-    required int width,
     required bool jpg,
     required int quality,
     required int split,
   }) {
     return compute(_stitchIsolate, {
       'paths': paths,
-      'width': width,
       'jpg': jpg,
       'quality': quality,
       'split': split,
@@ -108,8 +98,7 @@ class ImageService {
       final b = await File(p).readAsBytes();
       a.addFile(ArchiveFile(p.split('/').last, b.length, b));
     }
-    final out = ZipEncoder().encode(a);
-    return Uint8List.fromList(out);
+    return Uint8List.fromList(ZipEncoder().encode(a));
   }
 
   static Future<Uint8List> zipBytes(
@@ -118,8 +107,7 @@ class ImageService {
     for (var i = 0; i < datas.length; i++) {
       a.addFile(ArchiveFile(names[i], datas[i].length, datas[i]));
     }
-    final out = ZipEncoder().encode(a);
-    return Uint8List.fromList(out);
+    return Uint8List.fromList(ZipEncoder().encode(a));
   }
 
   static Future<File> saveTemp(Uint8List bytes, String name) async {
@@ -127,4 +115,3 @@ class ImageService {
     return File('${dir.path}/$name').writeAsBytes(bytes);
   }
 }
-

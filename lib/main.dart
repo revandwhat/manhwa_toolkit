@@ -3,11 +3,14 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'services/doc_service.dart';
 import 'services/gemini_service.dart';
 import 'services/image_service.dart';
+import 'services/translate_service.dart';
 
 void main() => runApp(const ManhwaApp());
 
@@ -37,36 +40,22 @@ class _RootPageState extends State<RootPage> {
   String _tool = 'Stitch';
 
   final _gemini = GeminiService();
+  final _svc = TranslateService();
 
-  static const _langs = {
+  static const _langCodes = {
+    'Indonesian': 'id',
+    'English': 'en',
+    'Korean': 'ko',
+    'Chinese': 'zh-CN',
+  };
+  static const _langNames = {
     'Indonesian': 'Indonesian (Bahasa Indonesia)',
     'English': 'English',
     'Korean': 'Korean',
     'Chinese': 'Simplified Chinese',
   };
 
-  // ---------- Stitch tool state ----------
-  List<String> _stitchPaths = [];
-  int? _width; // null = original
-  bool _jpg = false;
-  double _quality = 85;
-  int _split = 0;
-  String _exportMode = 'picture'; // picture | zip | folder
-  bool _stitching = false;
-  List<Uint8List> _parts = [];
-  String? _savedWhere;
-
-  // ---------- OCR+TL tool state ----------
-  String? _tlPath;
-  String _lang = 'Indonesian';
-  bool _translating = false;
-  List<TextItem> _items = [];
-
-  void _snack(String m) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
-  }
-
+  // ---------- storage helpers ----------
   static Future<Directory> _importsDir() async {
     final docs = await getApplicationDocumentsDirectory();
     final d = Directory('${docs.path}/imports');
@@ -74,7 +63,6 @@ class _RootPageState extends State<RootPage> {
     return d;
   }
 
-  /// Copies a picked file into the app's own storage so the path never goes stale.
   Future<String> _importCopy(String src) async {
     try {
       final dir = await _importsDir();
@@ -84,139 +72,43 @@ class _RootPageState extends State<RootPage> {
       await File(src).copy(out.path);
       return out.path;
     } catch (_) {
-      return src; // fall back to the original path
+      return src;
     }
   }
 
-  /// One-time "All files access" so we can save anywhere the user picks.
   Future<bool> _ensureStorage() async {
     if (await Permission.manageExternalStorage.isGranted) return true;
     if (await Permission.storage.request().isGranted) return true;
     final s = await Permission.manageExternalStorage.request();
     if (s.isGranted) return true;
-    _snack('Allow "All files access" (one time), then tap Stitch & save again');
+    _snack('Allow "All files access" (one time), then try again');
     return false;
   }
 
-  // ================= Stitch =================
-
-  Future<void> _addStitchPanels() async {
-    final r = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-      type: FileType.image,
-    );
-    final added = r?.files
-            .where((f) => f.path != null)
-            .map((f) => f.path!)
-            .toList() ??
-        const [];
-    if (added.isEmpty) return;
-    final imported = <String>[];
-    for (final p in added) {
-      imported.add(await _importCopy(p));
+  Future<String> _unique(String path, {bool isDir = false}) async {
+    final dot = path.lastIndexOf('.');
+    final hasExt = !isDir && dot > path.lastIndexOf('/');
+    final stem = hasExt ? path.substring(0, dot) : path;
+    final ext = hasExt ? path.substring(dot) : '';
+    var cand = path;
+    var i = 1;
+    while (isDir ? await Directory(cand).exists() : await File(cand).exists()) {
+      i++;
+      cand = '$stem-$i$ext';
     }
-    setState(() => _stitchPaths.addAll(imported));
+    return cand;
   }
 
-  void _reorder(int oldI, int newI) {
-    setState(() {
-      final p = _stitchPaths.removeAt(oldI);
-      _stitchPaths.insert(newI, p);
-    });
+  String _sanitize(String raw) {
+    final s = raw.trim().replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    return s.isEmpty ? 'output' : s;
   }
 
-  /// One flow: pick destination -> stitch -> files land there automatically.
-  Future<void> _stitch() async {
-    if (_stitchPaths.length < 2) {
-      _snack('Add at least 2 panels first');
-      return;
-    }
-    if (!await _ensureStorage()) return;
-    final dir = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Pick where to save the result',
-    );
-    if (dir == null) return;
-    setState(() {
-      _stitching = true;
-      _parts = [];
-      _savedWhere = null;
-    });
-    try {
-      final parts = await ImageService.stitch(
-        paths: _stitchPaths,
-        width: _width ?? 0,
-        jpg: _jpg,
-        quality: _quality.round(),
-        split: _split,
-      );
-
-      final ext = _jpg ? 'jpg' : 'png';
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      if (_exportMode == 'zip') {
-        final names = [
-          for (var i = 0; i < parts.length; i++) 'stitched-$ts-${i + 1}.$ext'
-        ];
-        final zip = await ImageService.zipBytes(parts, names);
-        await File('$dir/stitched_$ts.zip').writeAsBytes(zip);
-      } else if (_exportMode == 'folder') {
-        final sub = Directory('$dir/stitched_$ts');
-        await sub.create(recursive: true);
-        for (var i = 0; i < parts.length; i++) {
-          await File('${sub.path}/part-${i + 1}.$ext').writeAsBytes(parts[i]);
-        }
-      } else {
-        for (var i = 0; i < parts.length; i++) {
-          await File('$dir/stitched-$ts-${i + 1}.$ext')
-              .writeAsBytes(parts[i]);
-        }
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _parts = parts;
-        _savedWhere = dir;
-      });
-      _snack('Done - saved to $dir');
-    } catch (e) {
-      _snack('Failed: $e');
-    } finally {
-      if (mounted) setState(() => _stitching = false);
-    }
+  // ---------- shared ----------
+  void _snack(String m) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
-
-  Future<void> _customWidth() async {
-    final c = TextEditingController(text: _width?.toString() ?? '');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Custom width (px)'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-              hintText: 'e.g. 900', border: OutlineInputBorder()),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Save')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    final v = int.tryParse(c.text.trim());
-    if (v == null || v < 200 || v > 4000) {
-      _snack('Width must be between 200 and 4000 px');
-      return;
-    }
-    setState(() => _width = v);
-  }
-
-  // ================= OCR + TL =================
 
   Future<void> _askForKey() async {
     final c = TextEditingController();
@@ -229,8 +121,9 @@ class _RootPageState extends State<RootPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Free: open aistudio.google.com, tap "Get API key", create one, '
-                'paste it here. It stays on this device only.',
+                'Optional: only needed for the Gemini engine and the OCR tool. '
+                'Free at aistudio.google.com -> "Get API key". '
+                'The key stays on this device only.',
               ),
               const SizedBox(height: 12),
               TextField(
@@ -262,50 +155,211 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
-  Future<void> _pickTlImage() async {
-    final r = await FilePicker.platform.pickFiles(type: FileType.image);
-    final path = r?.files.single.path;
-    if (path == null) return;
-    final imported = await _importCopy(path);
+  // ---------- Stitch state ----------
+  List<String> _stitchPaths = [];
+  bool _jpg = false;
+  double _quality = 85;
+  int _split = 0;
+  String _exportMode = 'picture'; // picture | zip | folder
+  final _nameCtrl = TextEditingController(text: 'stitched');
+  bool _stitching = false;
+  List<Uint8List> _parts = [];
+  String? _savedWhere;
+
+  Future<void> _addStitchPanels() async {
+    final r = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      type: FileType.image,
+    );
+    final added =
+        r?.files.where((f) => f.path != null).map((f) => f.path!).toList() ??
+            const [];
+    if (added.isEmpty) return;
+    final imported = <String>[];
+    for (final p in added) {
+      imported.add(await _importCopy(p));
+    }
+    setState(() => _stitchPaths.addAll(imported));
+  }
+
+  void _reorder(int oldI, int newI) {
     setState(() {
-      _tlPath = imported;
-      _items = [];
+      final p = _stitchPaths.removeAt(oldI);
+      _stitchPaths.insert(newI, p);
     });
   }
 
-  Future<void> _ocrTl() async {
-    if (_tlPath == null) {
-      _snack('Choose an image first');
+  Future<void> _stitch() async {
+    if (_stitchPaths.length < 2) {
+      _snack('Add at least 2 panels first');
       return;
     }
-    final key = await _gemini.getKey();
-    if (!mounted) return;
-    if (key == null || key.isEmpty) {
-      await _askForKey();
-      return;
-    }
+    if (!await _ensureStorage()) return;
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Pick where to save the result',
+    );
+    if (dir == null) return;
+    final base = _sanitize(_nameCtrl.text);
     setState(() {
-      _translating = true;
-      _items = [];
+      _stitching = true;
+      _parts = [];
+      _savedWhere = null;
     });
     try {
-      final bytes = await File(_tlPath!).readAsBytes();
-      final mime =
-          _tlPath!.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-      final items =
-          await _gemini.ocrTranslate(bytes, mime: mime, lang: _langs[_lang]!);
+      final parts = await ImageService.stitch(
+        paths: _stitchPaths,
+        jpg: _jpg,
+        quality: _quality.round(),
+        split: _split,
+      );
+      final ext = _jpg ? 'jpg' : 'png';
+      if (_exportMode == 'zip') {
+        final names = [
+          for (var i = 0; i < parts.length; i++) '$base-${i + 1}.$ext'
+        ];
+        final zip = await ImageService.zipBytes(parts, names);
+        final out = await _unique('$dir/$base.zip');
+        await File(out).writeAsBytes(zip);
+      } else if (_exportMode == 'folder') {
+        final out = await _unique('$dir/$base', isDir: true);
+        await Directory(out).create(recursive: true);
+        for (var i = 0; i < parts.length; i++) {
+          await File('$out/$base-${i + 1}.$ext').writeAsBytes(parts[i]);
+        }
+      } else {
+        for (var i = 0; i < parts.length; i++) {
+          final out = await _unique('$dir/$base-$i.$ext');
+          await File(out).writeAsBytes(parts[i]);
+        }
+      }
       if (!mounted) return;
-      setState(() => _items = items);
-      if (items.isEmpty) _snack('No text detected in that image');
+      setState(() {
+        _parts = parts;
+        _savedWhere = dir;
+      });
+      _snack('Done - saved to $dir');
     } catch (e) {
-      _snack(e.toString().replaceFirst('Exception: ', ''));
+      _snack('Failed: $e');
+    } finally {
+      if (mounted) setState(() => _stitching = false);
+    }
+  }
+
+  // ---------- Translate-file state ----------
+  String? _docPath;
+  bool _useGemini = false;
+  String _lang = 'Indonesian';
+  String _outFormat = 'docx'; // txt | docx | zip
+  bool _translating = false;
+  String _prog = '';
+  String? _tlSavedWhere;
+
+  Future<void> _pickDoc() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.any);
+    final path = r?.files.single.path;
+    if (path == null) return;
+    setState(() {
+      _docPath = path;
+      _tlSavedWhere = null;
+    });
+  }
+
+  Future<void> _translateSave() async {
+    if (_docPath == null) {
+      _snack('Choose a file first');
+      return;
+    }
+    if (!await _ensureStorage()) return;
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Pick where to save the translation',
+    );
+    if (dir == null) return;
+    setState(() {
+      _translating = true;
+      _prog = '';
+      _tlSavedWhere = null;
+    });
+    try {
+      final text = await DocService.extractText(_docPath!);
+      final out = await _svc.translateAll(
+        text,
+        langCode: _langCodes[_lang]!,
+        langName: _langNames[_lang]!,
+        useGemini: _useGemini,
+        onProgress: (d, t) {
+          if (mounted) setState(() => _prog = 'Part $d of $t');
+        },
+      );
+      final srcName = _docPath!.split('/').last;
+      final dot = srcName.lastIndexOf('.');
+      final stem = dot > 0 ? srcName.substring(0, dot) : srcName;
+      final base = '${_sanitize(stem)}-${_langCodes[_lang]}';
+      String saved;
+      if (_outFormat == 'zip') {
+        final zip = await DocService.buildZipBoth(out, base);
+        final p = await _unique('$dir/$base.zip');
+        await File(p).writeAsBytes(zip);
+        saved = p;
+      } else if (_outFormat == 'docx') {
+        final p = await _unique('$dir/$base.docx');
+        await File(p).writeAsBytes(DocService.buildDocx(out));
+        saved = p;
+      } else {
+        final p = await _unique('$dir/$base.txt');
+        await File(p).writeAsBytes(DocService.buildTxt(out));
+        saved = p;
+      }
+      if (!mounted) return;
+      setState(() => _tlSavedWhere = saved);
+      _snack('Done - $saved');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', '').replaceFirst('FormatException: ', ''));
     } finally {
       if (mounted) setState(() => _translating = false);
     }
   }
 
-  // ================= UI =================
+  // ---------- OCR state ----------
+  String? _ocrPath;
+  bool _autoOcr = true;
+  bool _ocrBusy = false;
+  String _ocrText = '';
 
+  Future<void> _pickOcrImage() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = r?.files.single.path;
+    if (path == null) return;
+    final imported = await _importCopy(path);
+    setState(() {
+      _ocrPath = imported;
+      _ocrText = '';
+    });
+    if (_autoOcr) await _runOcr();
+  }
+
+  Future<void> _runOcr() async {
+    if (_ocrPath == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    setState(() => _ocrBusy = true);
+    try {
+      final bytes = await File(_ocrPath!).readAsBytes();
+      final mime =
+          _ocrPath!.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      final text = await _gemini.extractText(bytes, mime: mime);
+      if (!mounted) return;
+      setState(() => _ocrText = text);
+      if (text.isEmpty) _snack('No text detected');
+    } catch (e) {
+      final m = e.toString().replaceFirst('Exception: ', '');
+      _snack(m == 'NO_KEY' ? 'Add a Gemini key (key icon, top right)' : m);
+    } finally {
+      if (mounted) setState(() => _ocrBusy = false);
+    }
+  }
+
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     const titles = ['Manhwa Toolkit', 'Tools', 'Mini Game'];
@@ -350,38 +404,37 @@ class _RootPageState extends State<RootPage> {
       children: [
         _card('Welcome', [
           const Text(
-            'Your manhwa translation workbench. Open the Tools tab and pick '
-            'a tool from the dropdown - every tool has its own file input.',
+            'Pick a tool in the Tools tab. Every tool has its own input and '
+            'saves its result straight to a folder you choose.',
           ),
         ]),
         _card('Tool: Stitch', [
-          _step('1', 'Tools tab -> dropdown -> Stitch -> "Add panels".'),
+          _step('1', 'Add panels, drag to order (top = top of strip).'),
           _step('2',
-              'Long-press and drag to order (top of list = top of strip).'),
-          _step('3',
-              'Set width, file type, splitting, and the export format (Picture / ZIP / Folder).'),
-          _step('4',
-              'Tap "Stitch & save" - pick the destination folder when asked, '
-              'and the result lands there automatically. Nothing else to press.'),
+              'Panels keep their original pixels - no resizing, ever.'),
+          _step('3', 'Set file name, type (PNG/JPG), splitting, export format.'),
+          _step('4', 'Tap Stitch & save -> pick folder -> done.'),
         ]),
-        _card('Tool: OCR + Translate', [
-          _step('1', 'Tools tab -> dropdown -> OCR + TL -> "Choose image".'),
-          _step('2', 'Pick the target language.'),
-          _step('3',
-              '"Read & translate" returns every text piece: bubbles, narration, SFX.'),
-          const SizedBox(height: 8),
-          const Text(
-            'Needs a free Gemini API key (key icon, top right): '
-            'aistudio.google.com -> "Get API key". The key stays on this '
-            "device only. Chosen images are sent to Google's API.",
-            style: TextStyle(fontSize: 13),
-          ),
+        _card('Tool: Translate file', [
+          _step('1', 'Pick a .txt, .md, .pdf or .docx file.'),
+          _step('2', 'Engine: Free (no key needed) or Gemini (better quality).'),
+          _step('3', 'Pick language and output format: TXT, DOCX or ZIP.'),
+          _step('4',
+              'Translate & save -> pick folder. Paragraphs and titles keep '
+              'their positions; the translation is written to the file, not '
+              'shown on screen.'),
+        ]),
+        _card('Tool: OCR - image text', [
+          _step('1', 'Pick an image (manhwa panel, page...).'),
+          _step('2',
+              'Auto-extract toggle: ON = reads text immediately after picking. '
+              'OFF = you press "Extract text" yourself.'),
+          _step('3', 'All found text is listed and copyable. Needs a Gemini key.'),
         ]),
         _card('Coming next', [
           const Text(
             'Clean (manual white-fill + AI option), Typeset (draggable text '
-            'layers), raw downloader, and a mini game. Each gets its own '
-            'slot in the Tools dropdown.',
+            'layers), raw downloader, mini game.',
             style: TextStyle(fontSize: 13),
           ),
         ]),
@@ -426,25 +479,26 @@ class _RootPageState extends State<RootPage> {
                     value: 'Stitch',
                     child: Text('Stitch - combine panels into a strip')),
                 DropdownMenuItem(
-                    value: 'OCR + TL',
-                    child: Text('OCR + Translate - read a panel')),
+                    value: 'Translate file',
+                    child: Text('Translate file - txt/pdf/docx -> file')),
+                DropdownMenuItem(
+                    value: 'OCR',
+                    child: Text('OCR - read all text in an image')),
               ],
               onChanged: (v) => setState(() => _tool = v ?? 'Stitch'),
             ),
           ),
         ]),
-        if (_tool == 'Stitch') ..._stitchCards() else ..._tlCards(),
+        if (_tool == 'Stitch') ..._stitchCards(),
+        if (_tool == 'Translate file') ..._tlCards(),
+        if (_tool == 'OCR') ..._ocrCards(),
       ],
     );
   }
 
-  // ---------- Stitch tool ----------
+  // ---------- Stitch UI ----------
 
   List<Widget> _stitchCards() {
-    final isCustom = _width != null &&
-        _width != 800 &&
-        _width != 1000 &&
-        _width != 1200;
     return [
       _card('1. Panels', [
         Row(children: [
@@ -490,37 +544,21 @@ class _RootPageState extends State<RootPage> {
               child: const Text('Clear all'),
             ),
           ),
+        const Text(
+          'Original pixels only: output width = widest panel, no resizing.',
+          style: TextStyle(fontSize: 12),
+        ),
       ]),
       _card('2. Settings', [
-        Text('Width', style: Theme.of(context).textTheme.labelLarge),
-        Text('Height follows automatically so nothing gets squashed.',
-            style: Theme.of(context).textTheme.bodySmall),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            ChoiceChip(
-              label: const Text('Original'),
-              selected: _width == null,
-              onSelected: (_) => setState(() => _width = null),
-            ),
-            for (final w in const [800, 1000, 1200])
-              ChoiceChip(
-                label: Text('$w'),
-                selected: _width == w,
-                onSelected: (_) => setState(() => _width = w),
-              ),
-            ActionChip(
-              avatar: const Icon(Icons.tune, size: 18),
-              label: Text(isCustom ? '$_width px' : 'Custom'),
-              onPressed: _customWidth,
-            ),
-          ],
+        TextField(
+          controller: _nameCtrl,
+          decoration: const InputDecoration(
+            labelText: 'File name',
+            hintText: 'stitched',
+            border: OutlineInputBorder(),
+          ),
         ),
         const SizedBox(height: 16),
-        Text('File type', style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 8),
         Wrap(
           spacing: 8,
           children: [
@@ -548,8 +586,7 @@ class _RootPageState extends State<RootPage> {
           ),
         ],
         const SizedBox(height: 8),
-        Text('Split long strips',
-            style: Theme.of(context).textTheme.labelLarge),
+        Text('Split long strips', style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
@@ -591,8 +628,8 @@ class _RootPageState extends State<RootPage> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'You will pick the destination folder right after tapping - '
-          'the result is written there automatically.',
+          'Pick the destination folder right after tapping - files are '
+          'written there automatically.',
           style: TextStyle(fontSize: 13),
         ),
         if (_stitching)
@@ -606,10 +643,8 @@ class _RootPageState extends State<RootPage> {
               style: Theme.of(context).textTheme.labelLarge),
           const SizedBox(height: 4),
           if (_savedWhere != null)
-            SelectableText(
-              'Saved to: $_savedWhere',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            SelectableText('Saved to: $_savedWhere',
+                style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 8),
           SizedBox(
             height: 170,
@@ -636,92 +671,161 @@ class _RootPageState extends State<RootPage> {
     ];
   }
 
-  // ---------- OCR + TL tool ----------
+  // ---------- Translate-file UI ----------
 
   List<Widget> _tlCards() {
+    return [
+      _card('1. File', [
+        Row(children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              onPressed: _pickDoc,
+              icon: const Icon(Icons.description),
+              label: const Text('Choose file'),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        const Text('Supported: .txt  .md  .pdf  .docx',
+            style: TextStyle(fontSize: 12)),
+        if (_docPath != null) ...[
+          const SizedBox(height: 8),
+          Text(_docPath!.split('/').last,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+        ],
+      ]),
+      _card('2. Engine & language', [
+        Wrap(
+          spacing: 8,
+          children: [
+            ChoiceChip(
+              label: const Text('Free (no key)'),
+              selected: !_useGemini,
+              onSelected: (_) => setState(() => _useGemini = false),
+            ),
+            ChoiceChip(
+              label: const Text('Gemini (key)'),
+              selected: _useGemini,
+              onSelected: (_) => setState(() => _useGemini = true),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _langCodes.keys
+              .map((k) => ChoiceChip(
+                    label: Text(k),
+                    selected: _lang == k,
+                    onSelected: (_) => setState(() => _lang = k),
+                  ))
+              .toList(),
+        ),
+      ]),
+      _card('3. Output format', [
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final f in const [
+              ('txt', 'TXT'),
+              ('docx', 'DOCX (Word)'),
+              ('zip', 'ZIP (txt+docx)'),
+            ])
+              ChoiceChip(
+                label: Text(f.$2),
+                selected: _outFormat == f.$1,
+                onSelected: (_) => setState(() => _outFormat = f.$1),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Paragraph structure is preserved - titles and order stay in place. '
+          'The translation goes straight into the output file.',
+          style: TextStyle(fontSize: 13),
+        ),
+      ]),
+      _card('4. Translate & save', [
+        FilledButton.icon(
+          onPressed: _translating ? null : _translateSave,
+          icon: const Icon(Icons.translate),
+          label:
+              Text(_translating ? 'Translating...' : 'Translate & save'),
+        ),
+        if (_translating) ...[
+          const Padding(
+            padding: EdgeInsets.only(top: 12),
+            child: LinearProgressIndicator(),
+          ),
+          if (_prog.isNotEmpty) Text(_prog),
+        ],
+        if (_tlSavedWhere != null && !_translating) ...[
+          const SizedBox(height: 12),
+          SelectableText('Saved to: $_tlSavedWhere',
+              style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ]),
+    ];
+  }
+
+  // ---------- OCR UI ----------
+
+  List<Widget> _ocrCards() {
     return [
       _card('1. Image', [
         Row(children: [
           Expanded(
             child: FilledButton.tonalIcon(
-              onPressed: _pickTlImage,
+              onPressed: _ocrBusy ? null : _pickOcrImage,
               icon: const Icon(Icons.add_photo_alternate),
               label: const Text('Choose image'),
             ),
           ),
         ]),
-        if (_tlPath != null) ...[
-          const SizedBox(height: 8),
-          Text(_tlPath!.split('/').last,
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Auto-extract after picking'),
+          subtitle: const Text('OFF = press "Extract text" yourself'),
+          value: _autoOcr,
+          onChanged: (v) => setState(() => _autoOcr = v),
+        ),
+        if (_ocrPath != null)
+          Text(_ocrPath!.split('/').last,
               maxLines: 1, overflow: TextOverflow.ellipsis),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 180,
-            child: InteractiveViewer(
-              maxScale: 5,
-              child: Center(child: Image.file(File(_tlPath!))),
-            ),
-          ),
-        ],
       ]),
-      _card('2. Target language', [
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: _langs.entries
-              .map((e) => ChoiceChip(
-                    label: Text(e.key),
-                    selected: _lang == e.key,
-                    onSelected: (_) => setState(() => _lang = e.key),
-                  ))
-              .toList(),
-        ),
-      ]),
-      _card('3. Read & translate', [
+      _card('2. Extract', [
         FilledButton.icon(
-          onPressed: _translating ? null : _ocrTl,
-          icon: const Icon(Icons.translate),
-          label: Text(_translating ? 'Reading panel...' : 'Read & translate'),
+          onPressed: _ocrBusy ? null : _runOcr,
+          icon: const Icon(Icons.document_scanner),
+          label: Text(_ocrBusy ? 'Reading...' : 'Extract text'),
         ),
-        if (_translating)
+        if (_ocrBusy)
           const Padding(
             padding: EdgeInsets.only(top: 12),
             child: LinearProgressIndicator(),
           ),
+        const SizedBox(height: 8),
+        const Text('Needs a Gemini API key (key icon, top right).',
+            style: TextStyle(fontSize: 12)),
       ]),
-      _card('4. Result', [
-        if (_items.isEmpty && !_translating)
-          const Text('Translations will appear here.',
+      _card('3. Text found', [
+        if (_ocrText.isEmpty && !_ocrBusy)
+          const Text('Extracted text will appear here.',
               style: TextStyle(fontSize: 13)),
-        for (final it in _items)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.only(top: 8),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  it.original,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  it.translated,
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-                Text(it.kind, style: const TextStyle(fontSize: 11)),
-              ],
-            ),
+        if (_ocrText.isNotEmpty) ...[
+          SelectableText(_ocrText),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: _ocrText));
+              _snack('Copied');
+            },
+            icon: const Icon(Icons.copy),
+            label: const Text('Copy all'),
           ),
+        ],
       ]),
     ];
   }
@@ -734,9 +838,7 @@ class _RootPageState extends State<RootPage> {
       children: [
         _card('Mini game - under construction', [
           const Text(
-            'Coming soon. Idea: a word game powered by your own KBBI '
-            'dictionary - guess, streak, beat your high score.\n\n'
-            'Tell me which game you want and it lands in this tab.',
+            'Coming soon. Tell me which game you want and it lands in this tab.',
             style: TextStyle(fontSize: 13),
           ),
         ]),
