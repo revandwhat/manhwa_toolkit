@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'services/gemini_service.dart';
 import 'services/image_service.dart';
@@ -65,6 +67,37 @@ class _RootPageState extends State<RootPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
+  static Future<Directory> _importsDir() async {
+    final docs = await getApplicationDocumentsDirectory();
+    final d = Directory('${docs.path}/imports');
+    await d.create(recursive: true);
+    return d;
+  }
+
+  /// Copies a picked file into the app's own storage so the path never goes stale.
+  Future<String> _importCopy(String src) async {
+    try {
+      final dir = await _importsDir();
+      final name =
+          '${DateTime.now().microsecondsSinceEpoch}_${src.split('/').last}';
+      final out = File('${dir.path}/$name');
+      await File(src).copy(out.path);
+      return out.path;
+    } catch (_) {
+      return src; // fall back to the original path
+    }
+  }
+
+  /// One-time "All files access" so we can save anywhere the user picks.
+  Future<bool> _ensureStorage() async {
+    if (await Permission.manageExternalStorage.isGranted) return true;
+    if (await Permission.storage.request().isGranted) return true;
+    final s = await Permission.manageExternalStorage.request();
+    if (s.isGranted) return true;
+    _snack('Allow "All files access" (one time), then tap Stitch & save again');
+    return false;
+  }
+
   // ================= Stitch =================
 
   Future<void> _addStitchPanels() async {
@@ -78,7 +111,11 @@ class _RootPageState extends State<RootPage> {
             .toList() ??
         const [];
     if (added.isEmpty) return;
-    setState(() => _stitchPaths.addAll(added));
+    final imported = <String>[];
+    for (final p in added) {
+      imported.add(await _importCopy(p));
+    }
+    setState(() => _stitchPaths.addAll(imported));
   }
 
   void _reorder(int oldI, int newI) {
@@ -94,6 +131,7 @@ class _RootPageState extends State<RootPage> {
       _snack('Add at least 2 panels first');
       return;
     }
+    if (!await _ensureStorage()) return;
     final dir = await FilePicker.platform.getDirectoryPath(
       dialogTitle: 'Pick where to save the result',
     );
@@ -228,8 +266,9 @@ class _RootPageState extends State<RootPage> {
     final r = await FilePicker.platform.pickFiles(type: FileType.image);
     final path = r?.files.single.path;
     if (path == null) return;
+    final imported = await _importCopy(path);
     setState(() {
-      _tlPath = path;
+      _tlPath = imported;
       _items = [];
     });
   }
