@@ -1,16 +1,18 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'services/clean_service.dart';
 import 'services/doc_service.dart';
 import 'services/gemini_service.dart';
 import 'services/image_service.dart';
 import 'services/translate_service.dart';
+import 'game_page.dart';
+import 'services/typeset_service.dart';
 
 void main() => runApp(const ManhwaApp());
 
@@ -36,7 +38,7 @@ class RootPage extends StatefulWidget {
 }
 
 class _RootPageState extends State<RootPage> {
-  int _tab = 0; // 0 home, 1 tools, 2 game
+  int _tab = 0;
   String _tool = 'Stitch';
 
   final _gemini = GeminiService();
@@ -55,7 +57,7 @@ class _RootPageState extends State<RootPage> {
     'Chinese': 'Simplified Chinese',
   };
 
-  // ---------- storage helpers ----------
+  // ---------- shared helpers ----------
   static Future<Directory> _importsDir() async {
     final docs = await getApplicationDocumentsDirectory();
     final d = Directory('${docs.path}/imports');
@@ -104,7 +106,6 @@ class _RootPageState extends State<RootPage> {
     return s.isEmpty ? 'output' : s;
   }
 
-  // ---------- shared ----------
   void _snack(String m) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
@@ -121,7 +122,7 @@ class _RootPageState extends State<RootPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Optional: only needed for the Gemini engine and the OCR tool. '
+                'Optional: needed for the Gemini engine, OCR and Typeset. '
                 'Free at aistudio.google.com -> "Get API key". '
                 'The key stays on this device only.',
               ),
@@ -155,13 +156,18 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
+  Future<String?> _pickDestFolder(String title) async {
+    if (!await _ensureStorage()) return null;
+    return FilePicker.platform.getDirectoryPath(dialogTitle: title);
+  }
+
   // ---------- Stitch state ----------
   List<String> _stitchPaths = [];
   bool _jpg = false;
   double _quality = 85;
   int _split = 0;
-  String _exportMode = 'picture'; // picture | zip | folder
-  final _nameCtrl = TextEditingController(text: 'stitched');
+  String _exportMode = 'picture';
+  final _nameCtrl = TextEditingController(text: '[Stitched] File');
   bool _stitching = false;
   List<Uint8List> _parts = [];
   String? _savedWhere;
@@ -194,10 +200,7 @@ class _RootPageState extends State<RootPage> {
       _snack('Add at least 2 panels first');
       return;
     }
-    if (!await _ensureStorage()) return;
-    final dir = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Pick where to save the result',
-    );
+    final dir = await _pickDestFolder('Pick where to save the result');
     if (dir == null) return;
     final base = _sanitize(_nameCtrl.text);
     setState(() {
@@ -249,7 +252,7 @@ class _RootPageState extends State<RootPage> {
   String? _docPath;
   bool _useGemini = false;
   String _lang = 'Indonesian';
-  String _outFormat = 'docx'; // txt | docx | zip
+  String _outFormat = 'docx';
   bool _translating = false;
   String _prog = '';
   String? _tlSavedWhere;
@@ -258,8 +261,9 @@ class _RootPageState extends State<RootPage> {
     final r = await FilePicker.platform.pickFiles(type: FileType.any);
     final path = r?.files.single.path;
     if (path == null) return;
+    final imported = await _importCopy(path);
     setState(() {
-      _docPath = path;
+      _docPath = imported;
       _tlSavedWhere = null;
     });
   }
@@ -269,10 +273,7 @@ class _RootPageState extends State<RootPage> {
       _snack('Choose a file first');
       return;
     }
-    if (!await _ensureStorage()) return;
-    final dir = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Pick where to save the translation',
-    );
+    final dir = await _pickDestFolder('Pick where to save the translation');
     if (dir == null) return;
     setState(() {
       _translating = true;
@@ -311,9 +312,12 @@ class _RootPageState extends State<RootPage> {
       }
       if (!mounted) return;
       setState(() => _tlSavedWhere = saved);
-      _snack('Done - $saved');
+      _snack('Done');
     } catch (e) {
-      _snack(e.toString().replaceFirst('Exception: ', '').replaceFirst('FormatException: ', ''));
+      _snack(e
+          .toString()
+          .replaceFirst('Exception: ', '')
+          .replaceFirst('FormatException: ', ''));
     } finally {
       if (mounted) setState(() => _translating = false);
     }
@@ -325,10 +329,22 @@ class _RootPageState extends State<RootPage> {
   bool _ocrBusy = false;
   String _ocrText = '';
 
+  static bool _isImage(String p) {
+    final l = p.toLowerCase();
+    return l.endsWith('.png') ||
+        l.endsWith('.jpg') ||
+        l.endsWith('.jpeg') ||
+        l.endsWith('.webp');
+  }
+
   Future<void> _pickOcrImage() async {
     final r = await FilePicker.platform.pickFiles(type: FileType.image);
     final path = r?.files.single.path;
     if (path == null) return;
+    if (!_isImage(path)) {
+      _snack('That is not an image. For .txt/.pdf/.docx use Translate file.');
+      return;
+    }
     final imported = await _importCopy(path);
     setState(() {
       _ocrPath = imported;
@@ -359,6 +375,235 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
+  // ---------- Clean (CL) state ----------
+  Uint8List? _clOriginal;
+  Uint8List? _clBytes;
+  List<int> _clDims = [0, 0];
+  final List<Uint8List> _clUndo = [];
+  double _clTol = 55;
+  final _clNameCtrl = TextEditingController(text: '[Cleaned] File');
+  bool _clBusy = false;
+  String? _clSavedWhere;
+
+  Future<void> _pickCleanImage() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = r?.files.single.path;
+    if (path == null) return;
+    if (!_isImage(path)) {
+      _snack('That is not an image.');
+      return;
+    }
+    final imported = await _importCopy(path);
+    try {
+      final bytes = await File(imported).readAsBytes();
+      final dims = await CleanService.dims(bytes);
+      if (!mounted) return;
+      setState(() {
+        _clOriginal = bytes;
+        _clBytes = bytes;
+        _clDims = dims;
+        _clUndo.clear();
+        _clSavedWhere = null;
+      });
+    } catch (_) {
+      _snack('Could not read that image');
+    }
+  }
+
+  Future<void> _onCleanTap(TapUpDetails d, double dispW, double dispH) async {
+    if (_clBytes == null || _clBusy || _clDims[0] == 0) return;
+    final px =
+        (d.localPosition.dx / dispW * _clDims[0]).round().clamp(0, _clDims[0] - 1);
+    final py =
+        (d.localPosition.dy / dispH * _clDims[1]).round().clamp(0, _clDims[1] - 1);
+    setState(() => _clBusy = true);
+    try {
+      final out = await CleanService.clean(_clBytes!,
+          x: px, y: py, tolerance: _clTol.round());
+      if (!mounted) return;
+      setState(() {
+        _clUndo.add(_clBytes!);
+        if (_clUndo.length > 5) _clUndo.removeAt(0);
+        _clBytes = out;
+      });
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _clBusy = false);
+    }
+  }
+
+  Future<void> _saveClean() async {
+    if (_clBytes == null) return;
+    final dir = await _pickDestFolder('Pick where to save the cleaned image');
+    if (dir == null) return;
+    final base = _sanitize(_clNameCtrl.text);
+    final out = await _unique('$dir/$base.png');
+    try {
+      await File(out).writeAsBytes(_clBytes!);
+      if (!mounted) return;
+      setState(() => _clSavedWhere = out);
+      _snack('Done');
+    } catch (e) {
+      _snack('Save failed: $e');
+    }
+  }
+
+  // ---------- Typeset (TS) state ----------
+  String? _tsPath;
+  Uint8List? _tsBytes;
+  List<int> _tsDims = [0, 0];
+  List<BoxItem> _tsItems = [];
+  String _tsLang = 'Indonesian';
+  bool _tsBusy = false;
+  final _tsNameCtrl = TextEditingController(text: '[Typeset] File');
+  String? _tsSavedWhere;
+
+  Future<void> _pickTsImage() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = r?.files.single.path;
+    if (path == null) return;
+    if (!_isImage(path)) {
+      _snack('That is not an image.');
+      return;
+    }
+    final imported = await _importCopy(path);
+    try {
+      final bytes = await File(imported).readAsBytes();
+      final dims = await CleanService.dims(bytes);
+      if (!mounted) return;
+      setState(() {
+        _tsPath = imported;
+        _tsBytes = bytes;
+        _tsDims = dims;
+        _tsItems = [];
+        _tsSavedWhere = null;
+      });
+    } catch (_) {
+      _snack('Could not read that image');
+    }
+  }
+
+  Future<void> _tsRead() async {
+    if (_tsBytes == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    final key = await _gemini.getKey();
+    if (!mounted) return;
+    if (key == null || key.isEmpty) {
+      await _askForKey();
+      return;
+    }
+    setState(() {
+      _tsBusy = true;
+      _tsItems = [];
+    });
+    try {
+      final mime = _tsPath!.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : 'image/jpeg';
+      final items = await _gemini.readPanel(
+        _tsBytes!,
+        mime: mime,
+        lang: _langNames[_tsLang]!,
+      );
+      if (!mounted) return;
+      setState(() => _tsItems = items);
+      _snack(items.isEmpty
+          ? 'No text detected'
+          : '${items.length} box(es) - drag to adjust, tap to edit');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _tsBusy = false);
+    }
+  }
+
+  void _tsAddBox() {
+    if (_tsBytes == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    setState(() => _tsItems.add(BoxItem(translated: 'text')));
+  }
+
+  Future<void> _editTsItem(int i) async {
+    final it = _tsItems[i];
+    final c = TextEditingController(text: it.translated);
+    double size = it.size;
+    final res = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit text'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: c, maxLines: 4, autofocus: true),
+            const SizedBox(height: 8),
+            StatefulBuilder(
+              builder: (ctx, setD) => Slider(
+                value: size,
+                min: 0.15,
+                max: 0.9,
+                divisions: 15,
+                label: 'font size',
+                onChanged: (v) => setD(() => size = v),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'del'),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'ok'),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (res == 'del') {
+      setState(() => _tsItems.removeAt(i));
+    } else if (res == 'ok') {
+      setState(() {
+        it.translated = c.text.trim();
+        it.size = size;
+      });
+    }
+  }
+
+  Future<void> _tsExport() async {
+    if (_tsBytes == null || _tsItems.isEmpty) {
+      _snack('Nothing to export yet');
+      return;
+    }
+    final dir = await _pickDestFolder('Pick where to save the typeset image');
+    if (dir == null) return;
+    final base = _sanitize(_tsNameCtrl.text);
+    setState(() => _tsBusy = true);
+    try {
+      final png = await TypesetService.render(_tsBytes!, _tsItems);
+      final out = await _unique('$dir/$base.png');
+      await File(out).writeAsBytes(png);
+      if (!mounted) return;
+      setState(() => _tsSavedWhere = out);
+      _snack('Done');
+    } catch (e) {
+      _snack('Export failed: $e');
+    } finally {
+      if (mounted) setState(() => _tsBusy = false);
+    }
+  }
+
   // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
@@ -369,7 +614,8 @@ class _RootPageState extends State<RootPage> {
         centerTitle: true,
         actions: _tab == 1
             ? [
-                IconButton(icon: const Icon(Icons.key), onPressed: _askForKey)
+                IconButton(
+                    icon: const Icon(Icons.key), onPressed: _askForKey)
               ]
             : null,
       ),
@@ -404,37 +650,42 @@ class _RootPageState extends State<RootPage> {
       children: [
         _card('Welcome', [
           const Text(
-            'Pick a tool in the Tools tab. Every tool has its own input and '
-            'saves its result straight to a folder you choose.',
+            'Five tools in the Tools tab. Every tool has its own input and '
+            'saves results straight to a folder you choose.',
           ),
         ]),
-        _card('Tool: Stitch', [
+        _card('Stitch', [
           _step('1', 'Add panels, drag to order (top = top of strip).'),
           _step('2',
-              'Panels keep their original pixels - no resizing, ever.'),
-          _step('3', 'Set file name, type (PNG/JPG), splitting, export format.'),
-          _step('4', 'Tap Stitch & save -> pick folder -> done.'),
+              'Original pixels kept - no resizing. Set file name, PNG/JPG, splitting, format.'),
+          _step('3', 'Stitch & save -> pick folder -> done.'),
         ]),
-        _card('Tool: Translate file', [
-          _step('1', 'Pick a .txt, .md, .pdf or .docx file.'),
-          _step('2', 'Engine: Free (no key needed) or Gemini (better quality).'),
-          _step('3', 'Pick language and output format: TXT, DOCX or ZIP.'),
-          _step('4',
-              'Translate & save -> pick folder. Paragraphs and titles keep '
-              'their positions; the translation is written to the file, not '
-              'shown on screen.'),
+        _card('Translate file', [
+          _step('1', 'Pick .txt / .md / .pdf / .docx.'),
+          _step('2', 'Engine: Free (no key) or Gemini.'),
+          _step('3',
+              'Translate & save -> folder. Structure preserved; output is TXT / DOCX / ZIP.'),
         ]),
-        _card('Tool: OCR - image text', [
-          _step('1', 'Pick an image (manhwa panel, page...).'),
+        _card('OCR - image text', [
+          _step('1', 'Pick an image. Auto-extract toggle or manual button.'),
+          _step('2', 'All text listed and copyable. Needs a Gemini key.'),
+        ]),
+        _card('Clean (CL)', [
+          _step('1', 'Pick a panel, set tolerance.'),
           _step('2',
-              'Auto-extract toggle: ON = reads text immediately after picking. '
-              'OFF = you press "Extract text" yourself.'),
-          _step('3', 'All found text is listed and copyable. Needs a Gemini key.'),
+              'Tap inside a bubble - the text is wiped to the bubble color. Tap again for more bubbles.'),
+          _step('3', 'Undo / Reset if a tap goes wrong, then Save.'),
+        ]),
+        _card('Typeset (TS)', [
+          _step('1', 'Pick a panel -> "Read & translate" (AI, needs key).'),
+          _step('2',
+              'White text boxes appear on the panel: drag to move, tap to edit text/size, add boxes manually.'),
+          _step('3', 'Export -> finished PNG with boxes baked in.'),
         ]),
         _card('Coming next', [
           const Text(
-            'Clean (manual white-fill + AI option), Typeset (draggable text '
-            'layers), raw downloader, mini game.',
+            'AI clean & redraw (needs an image-generation API), raw '
+            'downloader, mini game.',
             style: TextStyle(fontSize: 13),
           ),
         ]),
@@ -484,6 +735,12 @@ class _RootPageState extends State<RootPage> {
                 DropdownMenuItem(
                     value: 'OCR',
                     child: Text('OCR - read all text in an image')),
+                DropdownMenuItem(
+                    value: 'Clean',
+                    child: Text('Clean (CL) - tap bubbles to erase text')),
+                DropdownMenuItem(
+                    value: 'Typeset',
+                    child: Text('Typeset (TS) - place translated text')),
               ],
               onChanged: (v) => setState(() => _tool = v ?? 'Stitch'),
             ),
@@ -492,6 +749,8 @@ class _RootPageState extends State<RootPage> {
         if (_tool == 'Stitch') ..._stitchCards(),
         if (_tool == 'Translate file') ..._tlCards(),
         if (_tool == 'OCR') ..._ocrCards(),
+        if (_tool == 'Clean') ..._clCards(),
+        if (_tool == 'Typeset') ..._tsCards(),
       ],
     );
   }
@@ -544,17 +803,14 @@ class _RootPageState extends State<RootPage> {
               child: const Text('Clear all'),
             ),
           ),
-        const Text(
-          'Original pixels only: output width = widest panel, no resizing.',
-          style: TextStyle(fontSize: 12),
-        ),
+        const Text('Original pixels only: output width = widest panel.',
+            style: TextStyle(fontSize: 12)),
       ]),
       _card('2. Settings', [
         TextField(
           controller: _nameCtrl,
           decoration: const InputDecoration(
             labelText: 'File name',
-            hintText: 'stitched',
             border: OutlineInputBorder(),
           ),
         ),
@@ -586,7 +842,8 @@ class _RootPageState extends State<RootPage> {
           ),
         ],
         const SizedBox(height: 8),
-        Text('Split long strips', style: Theme.of(context).textTheme.labelLarge),
+        Text('Split long strips',
+            style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
@@ -607,15 +864,15 @@ class _RootPageState extends State<RootPage> {
           spacing: 8,
           runSpacing: 8,
           children: [
-            for (final m in const [
-              ('picture', 'Picture(s)'),
-              ('zip', 'ZIP'),
-              ('folder', 'Folder'),
-            ])
+            for (final e in const {
+              'picture': 'Picture(s)',
+              'zip': 'ZIP',
+              'folder': 'Folder',
+            }.entries)
               ChoiceChip(
-                label: Text(m.$2),
-                selected: _exportMode == m.$1,
-                onSelected: (_) => setState(() => _exportMode = m.$1),
+                label: Text(e.value),
+                selected: _exportMode == e.key,
+                onSelected: (_) => setState(() => _exportMode = e.key),
               ),
           ],
         ),
@@ -722,27 +979,30 @@ class _RootPageState extends State<RootPage> {
                   ))
               .toList(),
         ),
+        const SizedBox(height: 8),
+        const Text('Gemini busy (503)? Switch to Free.',
+            style: TextStyle(fontSize: 12)),
       ]),
       _card('3. Output format', [
         Wrap(
           spacing: 8,
           children: [
-            for (final f in const [
-              ('txt', 'TXT'),
-              ('docx', 'DOCX (Word)'),
-              ('zip', 'ZIP (txt+docx)'),
-            ])
+            for (final e in const {
+              'txt': 'TXT',
+              'docx': 'DOCX (Word)',
+              'zip': 'ZIP (txt+docx)',
+            }.entries)
               ChoiceChip(
-                label: Text(f.$2),
-                selected: _outFormat == f.$1,
-                onSelected: (_) => setState(() => _outFormat = f.$1),
+                label: Text(e.value),
+                selected: _outFormat == e.key,
+                onSelected: (_) => setState(() => _outFormat = e.key),
               ),
           ],
         ),
         const SizedBox(height: 8),
         const Text(
-          'Paragraph structure is preserved - titles and order stay in place. '
-          'The translation goes straight into the output file.',
+          'Paragraph structure is preserved - titles and order stay in '
+          'place. The translation goes straight into the output file.',
           style: TextStyle(fontSize: 13),
         ),
       ]),
@@ -750,8 +1010,7 @@ class _RootPageState extends State<RootPage> {
         FilledButton.icon(
           onPressed: _translating ? null : _translateSave,
           icon: const Icon(Icons.translate),
-          label:
-              Text(_translating ? 'Translating...' : 'Translate & save'),
+          label: Text(_translating ? 'Translating...' : 'Translate & save'),
         ),
         if (_translating) ...[
           const Padding(
@@ -830,23 +1089,253 @@ class _RootPageState extends State<RootPage> {
     ];
   }
 
-  // ---------- Game placeholder ----------
+  // ---------- Clean UI ----------
 
-  Widget _buildGame() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _card('Mini game - under construction', [
-          const Text(
-            'Coming soon. Tell me which game you want and it lands in this tab.',
-            style: TextStyle(fontSize: 13),
+  List<Widget> _clCards() {
+    return [
+      _card('1. Image', [
+        Row(children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              onPressed: _clBusy ? null : _pickCleanImage,
+              icon: const Icon(Icons.add_photo_alternate),
+              label: const Text('Choose image'),
+            ),
           ),
         ]),
-      ],
+        const SizedBox(height: 8),
+        const Text(
+          'Best on single panels with uniform bubbles (white/solid color). '
+          'Tap INSIDE a bubble to erase its text.',
+          style: TextStyle(fontSize: 13),
+        ),
+      ]),
+      _card('2. Tolerance', [
+        Text('Fill tolerance: ${_clTol.round()}'),
+        Slider(
+          value: _clTol,
+          min: 20,
+          max: 100,
+          divisions: 16,
+          label: '${_clTol.round()}',
+          onChanged: (v) => setState(() => _clTol = v),
+        ),
+        const Text(
+          'Higher = grabs more shades (bigger fill). Lower = stricter.',
+          style: TextStyle(fontSize: 12),
+        ),
+      ]),
+      _card('3. Tap bubbles to erase', [
+        if (_clBytes == null)
+          const Text('Pick an image first.',
+              style: TextStyle(fontSize: 13))
+        else
+          LayoutBuilder(builder: (ctx, cons) {
+            final W = cons.maxWidth;
+            final H =
+                _clDims[1] == 0 ? 200.0 : W * _clDims[1] / _clDims[0];
+            return GestureDetector(
+              onTapUp: (d) => _onCleanTap(d, W, H),
+              child: SizedBox(
+                width: W,
+                height: H,
+                child: Stack(children: [
+                  Image.memory(_clBytes!, fit: BoxFit.fill),
+                  if (_clBusy)
+                    const Positioned.fill(
+                      child: Center(child: CircularProgressIndicator()),
+                    ),
+                ]),
+              ),
+            );
+          }),
+        if (_clSavedWhere != null) ...[
+          const SizedBox(height: 8),
+          SelectableText('Saved to: $_clSavedWhere',
+              style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ]),
+      _card('4. Fix & save', [
+        Wrap(
+          spacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: (_clUndo.isEmpty || _clBusy)
+                  ? null
+                  : () => setState(() {
+                        _clBytes = _clUndo.removeLast();
+                      }),
+              icon: const Icon(Icons.undo),
+              label: const Text('Undo'),
+            ),
+            OutlinedButton.icon(
+              onPressed: (_clOriginal == null || _clBusy)
+                  ? null
+                  : () => setState(() {
+                        _clBytes = _clOriginal;
+                        _clUndo.clear();
+                      }),
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('Reset'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _clNameCtrl,
+          decoration: const InputDecoration(
+            labelText: 'File name',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: (_clBytes == null || _clBusy) ? null : _saveClean,
+          icon: const Icon(Icons.save_alt),
+          label: const Text('Save cleaned PNG'),
+        ),
+      ]),
+    ];
+  }
+
+  // ---------- Typeset UI ----------
+
+  List<Widget> _tsCards() {
+    return [
+      _card('1. Image', [
+        Row(children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              onPressed: _tsBusy ? null : _pickTsImage,
+              icon: const Icon(Icons.add_photo_alternate),
+              label: const Text('Choose image'),
+            ),
+          ),
+        ]),
+      ]),
+      _card('2. Read & translate (AI)', [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _langCodes.keys
+              .map((k) => ChoiceChip(
+                    label: Text(k),
+                    selected: _tsLang == k,
+                    onSelected: (_) => setState(() => _tsLang = k),
+                  ))
+              .toList(),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _tsBusy ? null : _tsRead,
+          icon: const Icon(Icons.auto_fix_high),
+          label: Text(_tsBusy ? 'Reading panel...' : 'Read & translate'),
+        ),
+        if (_tsBusy)
+          const Padding(
+            padding: EdgeInsets.only(top: 12),
+            child: LinearProgressIndicator(),
+          ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _tsBusy ? null : _tsAddBox,
+          icon: const Icon(Icons.add),
+          label: const Text('Add empty box (for missed text)'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Boxes are AI-placed and approximate: drag to move, tap to edit '
+          'text/size (or delete).',
+          style: TextStyle(fontSize: 12),
+        ),
+      ]),
+      _card('3. Preview & edit', [
+        if (_tsBytes == null)
+          const Text('Pick an image first.', style: TextStyle(fontSize: 13))
+        else
+          LayoutBuilder(builder: (ctx, cons) {
+            final W = cons.maxWidth;
+            final H =
+                _tsDims[1] == 0 ? 240.0 : W * _tsDims[1] / _tsDims[0];
+            return SizedBox(
+              width: W,
+              height: H,
+              child: Stack(children: [
+                Positioned.fill(
+                  child: Image.memory(_tsBytes!, fit: BoxFit.fill),
+                ),
+                for (var i = 0; i < _tsItems.length; i++) _tsBox(i, W, H),
+              ]),
+            );
+          }),
+        if (_tsSavedWhere != null) ...[
+          const SizedBox(height: 8),
+          SelectableText('Saved to: $_tsSavedWhere',
+              style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ]),
+      _card('4. Export', [
+        TextField(
+          controller: _tsNameCtrl,
+          decoration: const InputDecoration(
+            labelText: 'File name',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _tsBusy ? null : _tsExport,
+          icon: const Icon(Icons.save_alt),
+          label: const Text('Export PNG (pick folder)'),
+        ),
+      ]),
+    ];
+  }
+
+  Widget _tsBox(int i, double W, double H) {
+    final it = _tsItems[i];
+    return Positioned(
+      left: (it.x * W).clamp(0.0, W).toDouble(),
+      top: (it.y * H).clamp(0.0, H).toDouble(),
+      width: (it.w * W).clamp(20.0, W).toDouble(),
+      height: (it.h * H).clamp(14.0, H).toDouble(),
+      child: GestureDetector(
+        onTap: () => _editTsItem(i),
+        onPanUpdate: (d) {
+          setState(() {
+            it.x = (it.x + d.delta.dx / W).clamp(0.0, 1.0).toDouble();
+            it.y = (it.y + d.delta.dy / H).clamp(0.0, 1.0).toDouble();
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.black26),
+          ),
+          child: Center(
+            child: Text(
+              it.translated,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.black,
+                fontSize:
+                    (it.size * it.h * H).clamp(6.0, 200.0).toDouble(),
+                height: 1.1,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
-  Widget _card(String title, List<Widget> children) {
+  // ---------- Game placeholder ----------
+
+  Widget _buildGame() => const GamePage();
+
+    Widget _card(String title, List<Widget> children) {
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
       child: Padding(
