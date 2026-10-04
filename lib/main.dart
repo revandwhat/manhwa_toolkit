@@ -5,16 +5,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'login_page.dart';
 
 import 'services/clean_service.dart';
 import 'services/doc_service.dart';
 import 'services/gemini_service.dart';
 import 'services/image_service.dart';
 import 'services/translate_service.dart';
-import 'game_page.dart';
 import 'services/typeset_service.dart';
 
-void main() => runApp(const ManhwaApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initSupabaseFromPrefs();
+  runApp(const ManhwaApp());
+}
 
 class ManhwaApp extends StatelessWidget {
   const ManhwaApp({super.key});
@@ -250,7 +254,8 @@ class _RootPageState extends State<RootPage> {
 
   // ---------- Translate-file state ----------
   String? _docPath;
-  bool _useGemini = false;
+  String _engine = 'free'; // free | gemini | offline
+  String _fromLang = 'English';
   String _lang = 'Indonesian';
   String _outFormat = 'docx';
   bool _translating = false;
@@ -284,9 +289,10 @@ class _RootPageState extends State<RootPage> {
       final text = await DocService.extractText(_docPath!);
       final out = await _svc.translateAll(
         text,
+        engine: _engine,
         langCode: _langCodes[_lang]!,
         langName: _langNames[_lang]!,
-        useGemini: _useGemini,
+        fromCode: _langCodes[_fromLang],
         onProgress: (d, t) {
           if (mounted) setState(() => _prog = 'Part $d of $t');
         },
@@ -957,13 +963,18 @@ class _RootPageState extends State<RootPage> {
           children: [
             ChoiceChip(
               label: const Text('Free (no key)'),
-              selected: !_useGemini,
-              onSelected: (_) => setState(() => _useGemini = false),
+              selected: _engine == 'free',
+              onSelected: (_) => setState(() => _engine = 'free'),
             ),
             ChoiceChip(
               label: const Text('Gemini (key)'),
-              selected: _useGemini,
-              onSelected: (_) => setState(() => _useGemini = true),
+              selected: _engine == 'gemini',
+              onSelected: (_) => setState(() => _engine = 'gemini'),
+            ),
+            ChoiceChip(
+              label: const Text('Offline (ML Kit)'),
+              selected: _engine == 'offline',
+              onSelected: (_) => setState(() => _engine = 'offline'),
             ),
           ],
         ),
@@ -979,8 +990,30 @@ class _RootPageState extends State<RootPage> {
                   ))
               .toList(),
         ),
+        if (_engine == 'offline') ...[
+          const SizedBox(height: 8),
+          const Text('Translate FROM (offline cannot auto-detect):',
+              style: TextStyle(fontSize: 12)),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _langCodes.keys
+                .map((k) => ChoiceChip(
+                      label: Text(k),
+                      selected: _fromLang == k,
+                      onSelected: (_) => setState(() => _fromLang = k),
+                    ))
+                .toList(),
+          ),
+          const Text(
+            'Offline = free + no internet after first model download. '
+            'Styles (barbarian etc.) need Gemini.',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
         const SizedBox(height: 8),
-        const Text('Gemini busy (503)? Switch to Free.',
+        const Text('Gemini busy (503)? Switch engine.',
             style: TextStyle(fontSize: 12)),
       ]),
       _card('3. Output format', [
@@ -1333,7 +1366,7 @@ class _RootPageState extends State<RootPage> {
 
   // ---------- Game placeholder ----------
 
-  Widget _buildGame() => const GamePage();
+  Widget _buildGame() => const GameGate();
 
     Widget _card(String title, List<Widget> children) {
     return Card(

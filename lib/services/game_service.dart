@@ -1,207 +1,294 @@
-import 'dart:convert';
 import 'dart:math';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-class Hero {
-  Hero({required this.name, required this.star, required this.power});
+class Skill {
+  Skill({required this.name, required this.kind, required this.value});
 
   final String name;
-  final int star; // 1..5
-  final int power;
+  final String kind; // damage | crit | lifesteal | guard | first
+  final double value;
 
-  Map<String, dynamic> toJson() =>
-      {'name': name, 'star': star, 'power': power};
+  static String descFor(String kind, double value) {
+    final p = (value * 100).round();
+    switch (kind) {
+      case 'damage':
+        return '+$p% damage';
+      case 'crit':
+        return '$p% chance to crit for x1.8';
+      case 'lifesteal':
+        return 'heals $p% of damage dealt';
+      case 'guard':
+        return 'takes $p% less damage';
+      case 'first':
+        return '+$p% damage in rounds 1-3';
+    }
+    return '';
+  }
 
-  static Hero fromJson(Map<String, dynamic> j) => Hero(
+  String get desc => descFor(kind, value);
+}
+
+class Hero {
+  Hero({
+    required this.id,
+    required this.name,
+    required this.star,
+    this.level = 1,
+    required this.skill,
+    this.locked = false,
+  });
+
+  final String id;
+  final String name;
+  final int star;
+  final int level;
+  final Skill skill;
+  final bool locked;
+
+  static const maxLevel = 30;
+  static const _basePower = {1: 40, 2: 80, 3: 150, 4: 260, 5: 450};
+
+  int get power => (_basePower[star]! * (1 + 0.07 * (level - 1))).round();
+  int get sellValue => star * 20 + (level - 1) * 8;
+
+  factory Hero.fromRow(Map<String, dynamic> j) => Hero(
+        id: j['id'] as String,
         name: j['name'] as String,
-        star: j['star'] as int,
-        power: j['power'] as int,
+        star: (j['star'] as num).toInt(),
+        level: (j['level'] as num?)?.toInt() ?? 1,
+        skill: Skill(
+          name: (j['skill_name'] ?? '') as String,
+          kind: (j['skill_kind'] ?? '') as String,
+          value: ((j['skill_value'] ?? 0) as num).toDouble(),
+        ),
+        locked: (j['locked'] as bool?) ?? false,
       );
 }
 
 class PullResult {
-  PullResult({required this.hero, required this.isDupe, required this.refund});
+  PullResult({required this.hero});
 
   final Hero hero;
-  final bool isDupe;
-  final int refund; // coins returned if dupe
+}
+
+class RoundEvent {
+  RoundEvent({
+    required this.round,
+    required this.heroDmg,
+    required this.enemyDmg,
+    required this.heroHp,
+    required this.enemyHp,
+    this.crit = false,
+    this.heal = 0,
+  });
+
+  final int round;
+  final int heroDmg;
+  final int enemyDmg;
+  final int heroHp;
+  final int enemyHp;
+  final int heal;
+  final bool crit;
 }
 
 class BattleResult {
-  BattleResult({required this.win, required this.log, required this.coins});
+  BattleResult({
+    required this.win,
+    required this.coins,
+    required this.floor,
+    required this.enemyName,
+    required this.enemyPower,
+    required this.heroName,
+    required this.heroPower,
+    required this.events,
+  });
 
   final bool win;
-  final List<String> log;
   final int coins;
+  final int floor;
+  final int enemyPower;
+  final int heroPower;
+  final String enemyName;
+  final String heroName;
+  final List<RoundEvent> events;
 }
 
 class GameService {
-  static const _kCoins = 'g_coins';
-  static const _kHeroes = 'g_heroes';
-  static const _kLast = 'g_last_claim';
-  static const _kStreak = 'g_streak';
-  static const _kFloor = 'g_floor'; // highest cleared
+  static const pullCost = 30;
+  static const pull10Cost = 300;
+  static const pull100Cost = 3000;
 
-  static const pullCost = 450;
-  static const pull10Cost = 3000;
+  static int levelCost(int level) => 15 + level * 10;
 
-  static const _names = {
-    1: ['Slime', 'Goblin', 'Bandit', 'Farm Boy'],
-    2: ['Archer', 'Swordsman', 'Shieldbearer', 'Monk'],
-    3: ['Flame Mage', 'Frost Knight', 'Shadow Blade', 'Storm Priest'],
-    4: ['Dragon Slayer', 'Void Assassin', 'Celestial Guard', 'Storm Empress'],
-    5: ['Sun God Kael', 'Moon Empress Luna', 'Abyss King Varog', 'Starfall Seraph'],
-  };
-  static const _basePower = {1: 50, 2: 95, 3: 170, 4: 300, 5: 520};
-  static const _weights = {1: 40, 2: 30, 3: 20, 4: 8, 5: 2};
+  static String enemyName(int floor) {
+    const names = [
+      'Cave Bat', 'Skeleton', 'Orc Brute', 'Dark Mage',
+      'Stone Golem', 'Wraith', 'Chaos Knight', 'Demon Lord',
+    ];
+    return names[(floor - 1) % names.length];
+  }
+
+  SupabaseClient get _sb => Supabase.instance.client;
 
   final _rng = Random();
+  Map<String, dynamic>? _pcache;
+  DateTime? _pcacheAt;
 
-  // ---------- state ----------
-  Future<int> coins() async =>
-      (await SharedPreferences.getInstance()).getInt(_kCoins) ?? 300;
+  String _uid() {
+    final u = _sb.auth.currentUser;
+    if (u == null) throw Exception('Not signed in');
+    return u.id;
+  }
 
-  Future<int> floor() async =>
-      (await SharedPreferences.getInstance()).getInt(_kFloor) ?? 0;
+  void _bust() {
+    _pcache = null;
+  }
 
-  Future<int> streakDays() async {
-    final p = await SharedPreferences.getInstance();
-    final today = _today();
-    if ((p.getString(_kLast) ?? '') == today) {
-      return p.getInt(_kStreak) ?? 0;
+  Future<Map<String, dynamic>> _profile() async {
+    if (_pcache != null &&
+        _pcacheAt != null &&
+        DateTime.now().difference(_pcacheAt!) < const Duration(seconds: 3)) {
+      return _pcache!;
     }
-    return p.getInt(_kStreak) ?? 0;
+    final row = await _sb.from('profiles').select().eq('id', _uid()).single();
+    _pcache = row;
+    _pcacheAt = DateTime.now();
+    return row;
   }
 
-  Future<List<Hero>> roster() async {
-    final p = await SharedPreferences.getInstance();
-    final raw = p.getString(_kHeroes);
-    if (raw == null) return [];
-    final list = jsonDecode(raw) as List;
-    return list.map((e) => Hero.fromJson(e as Map<String, dynamic>)).toList();
-  }
+  Future<int> coins() async => ((await _profile())['coins'] ?? 0) as int;
 
-  Future<void> _save(int coins, List<Hero> heroes) async {
-    final p = await SharedPreferences.getInstance();
-    await p.setInt(_kCoins, coins);
-    await p.setString(
-        _kHeroes, jsonEncode(heroes.map((h) => h.toJson()).toList()));
-  }
+  Future<int> floorCleared() async =>
+      ((await _profile())['highest_floor'] ?? 0) as int;
+
+  Future<int> streakDays() async =>
+      ((await _profile())['streak'] ?? 0) as int;
+
+  Future<bool> claimedToday() async =>
+      ((await _profile())['last_claim'] ?? '') == _today();
 
   static String _today() {
     final d = DateTime.now();
     return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
   }
 
-  // ---------- daily ----------
-  /// Returns coins granted, or -1 if already claimed today.
+  Future<List<Hero>> roster() async {
+    final rows = await _sb
+        .from('cards')
+        .select()
+        .eq('owner', _uid())
+        .order('created_at');
+    return rows.map((e) => Hero.fromRow(e)).toList();
+  }
+
   Future<int> claimDaily() async {
-    final p = await SharedPreferences.getInstance();
-    final today = _today();
-    if ((p.getString(_kLast) ?? '') == today) return -1;
-    var streak = p.getInt(_kStreak) ?? 0;
-    // consecutive if last claim was exactly one day ago
-    final last = p.getString(_kLast) ?? '';
-    final yd = DateTime.now().subtract(const Duration(days: 1));
-    final yStr =
-        '${yd.year}-${yd.month.toString().padLeft(2, '0')}-${yd.day.toString().padLeft(2, '0')}';
-    streak = (last == yStr) ? streak + 1 : 1;
-    var bonus = (streak - 1) * 50;
-    if (bonus > 300) bonus = 300;
-    final reward = 200 + bonus;
-    await p.setString(_kLast, today);
-    await p.setInt(_kStreak, streak);
-    final c = await coins();
-    await _save(c + reward, await roster());
-    return reward;
+    final r = await _sb.rpc('claim_daily');
+    _bust();
+    return (r as num).toInt();
   }
 
-  // ---------- gacha ----------
-  int _rollStar() {
-    final total = _weights.values.reduce((a, b) => a + b);
-    var r = _rng.nextInt(total);
-    for (final e in _weights.entries) {
-      if (r < e.value) return e.key;
-      r -= e.value;
-    }
-    return 1;
+  Future<List<PullResult>> pull(int count) async {
+    final rows = await _sb.rpc('gacha_pull', params: {'n': count});
+    _bust();
+    return (rows as List)
+        .map((e) => PullResult(hero: Hero.fromRow(e as Map<String, dynamic>)))
+        .toList();
   }
 
-  Hero _makeHero(int star) {
-    final pool = _names[star]!;
-    final name = pool[_rng.nextInt(pool.length)];
-    final p = _basePower[star]!;
-    return Hero(
-        name: name, star: star, power: (p * (0.9 + _rng.nextDouble() * 0.2)).round());
+  Future<void> levelUp(int index) async {
+    final roster = await this.roster();
+    if (index >= roster.length) throw Exception('Card not found');
+    await _sb.rpc('level_up_card', params: {'card_id': roster[index].id});
+    _bust();
   }
 
-  Future<List<PullResult>> pull(int count, {bool guarantee3 = false}) async {
-    final c = await coins();
-    final cost = count == 10 ? pull10Cost : pullCost * count;
-    if (c < cost) throw Exception('Not enough coins ($cost needed)');
-    final rosterNow = await roster();
-    final results = <PullResult>[];
-    var best = 0;
-    for (var i = 0; i < count; i++) {
-      var star = _rollStar();
-      if (guarantee3 && i == count - 1 && best < 3) star = 3;
-      if (star > best) best = star;
-      final h = _makeHero(star);
-      final dupe = rosterNow.any((x) => x.name == h.name && x.star == h.star);
-      final refund = dupe ? h.star * 30 : 0;
-      results.add(PullResult(hero: h, isDupe: dupe, refund: refund));
-      if (!dupe) rosterNow.add(h);
-    }
-    var newCoins = c - cost;
-    for (final r in results) {
-      newCoins += r.refund;
-    }
-    await _save(newCoins, rosterNow);
-    return results;
+  Future<void> toggleLock(int index) async {
+    final roster = await this.roster();
+    if (index >= roster.length) throw Exception('Card not found');
+    await _sb.rpc('lock_card',
+        params: {'card_id': roster[index].id, 'locked': !roster[index].locked});
   }
 
-  // ---------- dungeon ----------
-  static String _enemyName(int floor) {
-    const names = [
-      'Cave Bat', 'Skeleton', 'Orc Brute', 'Dark Mage',
-      'Stone Golem', 'Wraith', 'Chaos Knight', 'Demon Lord'
-    ];
-    return names[(floor - 1) % names.length];
+  Future<int> sell(int index) async {
+    final roster = await this.roster();
+    if (index >= roster.length) throw Exception('Card not found');
+    final r = await _sb.rpc('sell_card', params: {'card_id': roster[index].id});
+    _bust();
+    return (r as num).toInt();
   }
 
-  Future<BattleResult> battle(Hero hero) async {
-    final currentFloor = await floor();
-    final f = currentFloor + 1;
-    final ePower = 30 + f * 18;
-    var pHp = hero.power * 10;
-    var eHp = ePower * 8;
-    final log = <String>[
-      'Floor $f: ${hero.name} (${hero.star}*, ${hero.power} power) '
-          'vs ${_enemyName(f)} ($ePower power)'
-    ];
+  Future<void> gift(int index, String username) async {
+    final roster = await this.roster();
+    if (index >= roster.length) throw Exception('Card not found');
+    await _sb.rpc('gift_card',
+        params: {'card_id': roster[index].id, 'to_username': username});
+  }
+
+  Future<void> signOut() => _sb.auth.signOut();
+
+  /// Battle is simulated locally (so the animation works), but the reward
+  /// and floor progression are computed and stored by the server.
+  Future<BattleResult> battle(Hero hero, int requestedFloor) async {
+    final cleared = await floorCleared();
+    final f = requestedFloor.clamp(1, cleared + 1);
+    final ePower = 25 + f * 15;
+    final pMax = hero.power * 10;
+    final eMax = ePower * 8;
+    var pHp = pMax;
+    var eHp = eMax;
+    final events = <RoundEvent>[];
     var round = 1;
-    while (pHp > 0 && eHp > 0 && round <= 30) {
-      final pDmg = (hero.power * (0.85 + _rng.nextDouble() * 0.3)).round();
-      eHp -= pDmg;
-      log.add('R$round: you hit for $pDmg - enemy $eHp HP');
-      if (eHp <= 0) break;
-      final eDmg = (ePower * (0.85 + _rng.nextDouble() * 0.3)).round();
-      pHp -= eDmg;
-      log.add('R$round: enemy hits for $eDmg - you ${pHp > 0 ? pHp : 0} HP');
+    while (pHp > 0 && eHp > 0 && round <= 40) {
+      var dmg = hero.power * (0.85 + _rng.nextDouble() * 0.3);
+      var crit = false;
+      switch (hero.skill.kind) {
+        case 'damage':
+          dmg *= 1 + hero.skill.value;
+        case 'first':
+          if (round <= 3) dmg *= 1 + hero.skill.value;
+        case 'crit':
+          if (_rng.nextDouble() < hero.skill.value) {
+            dmg *= 1.8;
+            crit = true;
+          }
+      }
+      final hd = dmg.round();
+      eHp -= hd;
+      var heal = 0;
+      if (hero.skill.kind == 'lifesteal') {
+        heal = (hd * hero.skill.value).round();
+      }
+      pHp += heal;
+      if (pHp > pMax) pHp = pMax;
+      var ed = ePower * (0.85 + _rng.nextDouble() * 0.3);
+      if (hero.skill.kind == 'guard') ed *= 1 - hero.skill.value;
+      final edd = ed.round();
+      pHp -= edd;
+      events.add(RoundEvent(
+        round: round,
+        heroDmg: hd,
+        enemyDmg: edd,
+        heroHp: pHp > 0 ? pHp : 0,
+        enemyHp: eHp > 0 ? eHp : 0,
+        crit: crit,
+        heal: heal,
+      ));
       round++;
     }
     final win = eHp <= 0;
-    final reward = win ? 80 + f * 15 : 10;
-    final p = await SharedPreferences.getInstance();
-    final c = await coins();
-    if (win) {
-      await p.setInt(_kFloor, f);
-    }
-    await _save(c + reward, await roster());
-    log.add(win
-        ? 'VICTORY! +$reward coins - floor $f cleared'
-        : 'Defeated... +$reward coins consolation. Level up heroes and retry.');
-    return BattleResult(win: win, log: log, coins: reward);
+    final coins =
+        await _sb.rpc('battle_result', params: {'f': f, 'won': win});
+    _bust();
+    return BattleResult(
+      win: win,
+      coins: (coins as num).toInt(),
+      floor: f,
+      enemyName: enemyName(f),
+      enemyPower: ePower,
+      heroName: hero.name,
+      heroPower: hero.power,
+      events: events,
+    );
   }
 }

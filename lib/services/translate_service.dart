@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,13 +10,16 @@ class TranslateService {
   static const _geminiUrl =
       'https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent';
 
+  static const _ml = {
+    'id': TranslateLanguage.indonesian,
+    'en': TranslateLanguage.english,
+    'ko': TranslateLanguage.korean,
+    'zh-CN': TranslateLanguage.chinese,
+  };
+
   Future<String?> getKey() async =>
       (await SharedPreferences.getInstance()).getString('gemini_key');
 
-  Future<void> setKey(String k) async => (await SharedPreferences.getInstance())
-      .setString('gemini_key', k.trim());
-
-  /// Splits on blank lines so paragraphs (and titles) keep their positions.
   List<String> chunk(String text, [int max = 3000]) {
     if (text.length <= max) return [text];
     final paras = text.split(RegExp(r'\n\s*\n'));
@@ -44,7 +48,7 @@ class TranslateService {
     return chunks;
   }
 
-  /// No-key engine: Google's public translate endpoint (unofficial).
+  // ---- Free engine (online, no key, unofficial endpoint) ----
   Future<String> _freeOnce(String text, String code) async {
     for (var a = 1; a <= 3; a++) {
       try {
@@ -77,7 +81,35 @@ class TranslateService {
     throw Exception('Free engine unavailable (rate-limited?)');
   }
 
-  /// Gemini with retries - rides out 503 "high demand" spikes.
+  // ---- Offline engine (ML Kit on-device) ----
+  Future<String> _offlineChunk(String text, String fromCode, String toCode) async {
+    final src = _ml[fromCode];
+    final tgt = _ml[toCode];
+    if (src == null || tgt == null) {
+      throw Exception('Language not supported offline');
+    }
+    try {
+      final mgr = OnDeviceTranslatorModelManager();
+      if (!await mgr.isModelDownloaded(fromCode)) {
+        await mgr.downloadModel(fromCode, isWifiRequired: false);
+      }
+      if (!await mgr.isModelDownloaded(toCode)) {
+        await mgr.downloadModel(toCode, isWifiRequired: false);
+      }
+      final t = OnDeviceTranslator(sourceLanguage: src, targetLanguage: tgt);
+      try {
+        return await t.translateText(text);
+      } finally {
+        await t.close();
+      }
+    } catch (e) {
+      throw Exception(
+          'Offline engine failed (first use downloads ~30MB per language, '
+          'and Google Play Services must be installed): $e');
+    }
+  }
+
+  // ---- Gemini (online, key, retries through 503s) ----
   Future<http.Response> _post(String prompt, String key) async {
     var last = '';
     for (var a = 1; a <= 3; a++) {
@@ -109,15 +141,14 @@ class TranslateService {
         last = 'Gemini timed out';
       }
     }
-    throw Exception('$last\n(Model busy - retry soon, or use the Free engine)');
+    throw Exception('$last\n(Model busy - retry soon, or switch engine)');
   }
 
   Future<String> _geminiOnce(String text, String name, String key) async {
     final prompt = 'Translate the text inside <text> tags into $name.\n'
         'Rules:\n'
         '- Output ONLY the translation, no notes, no markdown.\n'
-        '- Preserve the paragraph structure exactly: same number of '
-        'paragraphs, same order (titles stay titles).\n\n'
+        '- Preserve the paragraph structure exactly.\n\n'
         '<text>\n$text\n</text>';
     final res = await _post(prompt, key);
     final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -129,28 +160,40 @@ class TranslateService {
 
   Future<String> translateAll(
     String text, {
+    required String engine, // 'free' | 'gemini' | 'offline'
     required String langCode,
     required String langName,
-    required bool useGemini,
+    String? fromCode,
     void Function(int done, int total)? onProgress,
   }) async {
     if (text.trim().isEmpty) throw Exception('No text found in that file');
     String? key;
-    if (useGemini) {
+    if (engine == 'gemini') {
       key = await getKey();
       if (key == null || key.isEmpty) {
-        throw Exception('Gemini needs a key - or switch to the Free engine');
+        throw Exception('Gemini needs a key - or switch engine');
       }
     }
-    final chunks = chunk(text, useGemini ? 3500 : 1800);
+    if (engine == 'offline' && fromCode == langCode) {
+      throw Exception('Source and target language are the same');
+    }
+    final maxLen =
+        engine == 'gemini' ? 3500 : (engine == 'free' ? 1800 : 2500);
+    final chunks = chunk(text, maxLen);
     final out = <String>[];
     for (var i = 0; i < chunks.length; i++) {
-      out.add(useGemini
-          ? await _geminiOnce(chunks[i], langName, key!)
-          : await _freeOnce(chunks[i], langCode));
+      switch (engine) {
+        case 'gemini':
+          out.add(await _geminiOnce(chunks[i], langName, key!));
+        case 'offline':
+          out.add(await _offlineChunk(chunks[i], fromCode ?? 'en', langCode));
+        default:
+          out.add(await _freeOnce(chunks[i], langCode));
+      }
       onProgress?.call(i + 1, chunks.length);
       if (i < chunks.length - 1) {
-        await Future.delayed(Duration(milliseconds: useGemini ? 1500 : 400));
+        await Future.delayed(
+            Duration(milliseconds: engine == 'free' ? 400 : 200));
       }
     }
     return out.join('\n\n');
