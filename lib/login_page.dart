@@ -4,11 +4,23 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'game_page.dart';
 
+// ==== YOUR SUPABASE PROJECT (Dashboard -> Project Settings -> API) ====
+// Paste your values between the quotes and rebuild. Then EVERY user gets
+// login/signup with zero setup. The anon/publishable key is safe to embed.
+const String kSupabaseUrl = 'https://cbadhjkgcnxiclmrimlf.supabase.co';
+const String kSupabasePublishableKey = 'sb_publishable_KQGQCv1ioKofoGrDrt7Few_l-PKwqms';
+
 class SbReady {
   static bool initialized = false;
 }
 
 Future<void> initSupabaseFromPrefs() async {
+  if (kSupabaseUrl.isNotEmpty && kSupabasePublishableKey.isNotEmpty) {
+    await Supabase.initialize(
+        url: kSupabaseUrl, publishableKey: kSupabasePublishableKey);
+    SbReady.initialized = true;
+    return;
+  }
   final p = await SharedPreferences.getInstance();
   final url = p.getString('sb_url');
   final key = p.getString('sb_key');

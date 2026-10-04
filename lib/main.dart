@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:pro_image_editor/pro_image_editor.dart';
 import 'login_page.dart';
 
 import 'services/clean_service.dart';
@@ -610,6 +611,117 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
+  // ---------- Photo Editor state ----------
+  String? _editPath;
+  final _editNameCtrl = TextEditingController(text: '[Edited] File');
+  bool _editBusy = false;
+  String? _editSavedWhere;
+
+  Future<void> _pickEditImage() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = r?.files.single.path;
+    if (path == null) return;
+    if (!_isImage(path)) {
+      _snack('That is not an image.');
+      return;
+    }
+    final imported = await _importCopy(path);
+    setState(() {
+      _editPath = imported;
+      _editSavedWhere = null;
+    });
+  }
+
+  Future<void> _openEditor() async {
+    if (_editPath == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    final bytes = await File(_editPath!).readAsBytes();
+    if (!mounted) return;
+    Uint8List? result;
+    try {
+      result = await Navigator.push<Uint8List>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ProImageEditor.memory(
+            bytes,
+            callbacks: ProImageEditorCallbacks(
+              onImageEditingComplete: (Uint8List out) async =>
+                  Navigator.pop(context, out),
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      _snack('Editor failed to open: $e');
+      return;
+    }
+    if (result == null) return;
+    final dir = await _pickDestFolder('Pick where to save the edited image');
+    if (dir == null) return;
+    final base = _sanitize(_editNameCtrl.text);
+    setState(() => _editBusy = true);
+    try {
+      final out = await _unique('$dir/$base.png');
+      await File(out).writeAsBytes(result);
+      if (!mounted) return;
+      setState(() => _editSavedWhere = out);
+      _snack('Done');
+    } catch (e) {
+      _snack('Save failed: $e');
+    } finally {
+      if (mounted) setState(() => _editBusy = false);
+    }
+  }
+
+  List<Widget> _editorCards() {
+    return [
+      _card('1. Image', [
+        Row(children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              onPressed: _pickEditImage,
+              icon: const Icon(Icons.add_photo_alternate),
+              label: const Text('Choose image'),
+            ),
+          ),
+        ]),
+        if (_editPath != null) ...[
+          const SizedBox(height: 8),
+          Text(_editPath!.split('/').last,
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+        ],
+      ]),
+      _card('2. Open the full editor', [
+        TextField(
+          controller: _editNameCtrl,
+          decoration: const InputDecoration(
+              labelText: 'File name', border: OutlineInputBorder()),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _editBusy ? null : _openEditor,
+          icon: const Icon(Icons.edit),
+          label: const Text('Open editor'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Inside: brush painting (paint bubbles white = cleaning), text '
+          'tool with fonts and colors, tune sliders (brightness, contrast, '
+          'saturation...), filter presets, crop & rotate, blur, stickers. '
+          'Tap Done -> pick a folder -> saved as PNG.',
+          style: TextStyle(fontSize: 13),
+        ),
+      ]),
+      if (_editSavedWhere != null)
+        _card('Result', [
+          SelectableText('Saved to: $_editSavedWhere',
+              style: Theme.of(context).textTheme.bodySmall),
+        ]),
+    ];
+  }
+
   // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
@@ -688,6 +800,17 @@ class _RootPageState extends State<RootPage> {
               'White text boxes appear on the panel: drag to move, tap to edit text/size, add boxes manually.'),
           _step('3', 'Export -> finished PNG with boxes baked in.'),
         ]),
+        _card('Online game', [
+          const Text(
+            'Gacha, dungeon, and sharing cards with other players - all '
+            'saved online. Create an account or log in.'),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: () => setState(() => _tab = 2),
+            icon: const Icon(Icons.sports_esports),
+            label: const Text('Log in / Sign up & play'),
+          ),
+        ]),
         _card('Coming next', [
           const Text(
             'AI clean & redraw (needs an image-generation API), raw '
@@ -747,6 +870,9 @@ class _RootPageState extends State<RootPage> {
                 DropdownMenuItem(
                     value: 'Typeset',
                     child: Text('Typeset (TS) - place translated text')),
+                DropdownMenuItem(
+                    value: 'Editor',
+                    child: Text('Photo Editor - brush, text, filters, crop')),
               ],
               onChanged: (v) => setState(() => _tool = v ?? 'Stitch'),
             ),
@@ -757,6 +883,7 @@ class _RootPageState extends State<RootPage> {
         if (_tool == 'OCR') ..._ocrCards(),
         if (_tool == 'Clean') ..._clCards(),
         if (_tool == 'Typeset') ..._tsCards(),
+        if (_tool == 'Editor') ..._editorCards(),
       ],
     );
   }
