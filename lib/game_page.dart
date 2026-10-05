@@ -19,11 +19,22 @@ class _GamePageState extends State<GamePage>
   int _streak = 0;
   int _floor = 0;
   List<Hero> _roster = [];
+  List<String> _teamIds = [];
   bool _claimed = false;
   bool _busy = false;
+  bool _isAdmin = false;
+  bool _loaded = false;
 
-  int _dHeroIdx = 0;
   int _dFloor = 1;
+
+  // admin fields
+  final _goldUser = TextEditingController();
+  final _goldAmt = TextEditingController();
+  int _hStar = 3;
+  final _hName = TextEditingController();
+  final _rmName = TextEditingController();
+  final _artName = TextEditingController();
+  final _artUrl = TextEditingController();
 
   static const _starColor = {
     1: Colors.grey,
@@ -36,7 +47,7 @@ class _GamePageState extends State<GamePage>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 4, vsync: this);
+    _tabs = TabController(length: 5, vsync: this);
     _tabs.addListener(() {
       if (mounted) setState(() {});
     });
@@ -49,22 +60,44 @@ class _GamePageState extends State<GamePage>
     super.dispose();
   }
 
+  List<Hero> get _team {
+    final out = <Hero>[];
+    for (final id in _teamIds) {
+      for (final h in _roster) {
+        if (h.id == id) {
+          out.add(h);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
   Future<void> _refresh() async {
-    final coins = await _game.coins();
-    final roster = await _game.roster();
-    final floor = await _game.floorCleared();
-    final streak = await _game.streakDays();
-    final claimed = await _game.claimedToday();
-    if (!mounted) return;
-    setState(() {
-      _coins = coins;
-      _roster = roster;
-      _floor = floor;
-      _streak = streak;
-      _claimed = claimed;
-      if (_dHeroIdx >= roster.length) _dHeroIdx = 0;
-      _dFloor = floor + 1;
-    });
+    try {
+      final coins = await _game.coins();
+      final roster = await _game.roster();
+      final floor = await _game.floorCleared();
+      final streak = await _game.streakDays();
+      final claimed = await _game.claimedToday();
+      final admin = await _game.isAdmin();
+      final team = await _game.loadTeam();
+      if (!mounted) return;
+      setState(() {
+        _coins = coins;
+        _roster = roster;
+        _floor = floor;
+        _streak = streak;
+        _claimed = claimed;
+        _isAdmin = admin;
+        _teamIds =
+            team.where((id) => roster.any((h) => h.id == id)).toList();
+        if (_dFloor > floor + 1) _dFloor = floor + 1;
+        _loaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loaded = true);
+    }
   }
 
   void _snack(String m) {
@@ -96,11 +129,11 @@ class _GamePageState extends State<GamePage>
           title: Text('${count}x Pull!'),
           content: SizedBox(
             width: double.maxFinite,
-            height: count == 100 ? 420 : (count == 10 ? 260 : 150),
+            height: count == 100 ? 420 : (count == 10 ? 300 : 170),
             child: GridView.builder(
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: count == 1 ? 1 : 5,
-                childAspectRatio: 0.7,
+                childAspectRatio: 0.62,
               ),
               itemCount: results.length,
               itemBuilder: (ctx, i) {
@@ -113,20 +146,32 @@ class _GamePageState extends State<GamePage>
                     side: BorderSide(color: c, width: 2),
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.all(4),
+                    padding: const EdgeInsets.all(3),
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text('★' * r.hero.star,
-                            style: TextStyle(
-                                color: c, fontWeight: FontWeight.bold)),
+                        Expanded(
+                          child: r.hero.picture != null
+                              ? Image.network(r.hero.picture!,
+                                  fit: BoxFit.cover,
+                                  width: double.infinity,
+                                  errorBuilder: (_, _, _) => Center(
+                                      child: Text('★' * r.hero.star,
+                                          style: TextStyle(
+                                              color: c,
+                                              fontWeight:
+                                                  FontWeight.bold))))
+                              : Center(
+                                  child: Text('★' * r.hero.star,
+                                      style: TextStyle(
+                                          color: c,
+                                          fontWeight: FontWeight.bold))),
+                        ),
                         Text(r.hero.name,
-                            maxLines: 2,
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 10)),
-                        Text('${r.hero.power} pw',
                             style: const TextStyle(fontSize: 9)),
+                        Text('${r.hero.power} pw',
+                            style: const TextStyle(fontSize: 8)),
                       ],
                     ),
                   ),
@@ -161,21 +206,35 @@ class _GamePageState extends State<GamePage>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(children: [
-              Text('★' * h.star,
-                  style: TextStyle(
-                      color: _starColor[h.star],
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(width: 8),
+              if (h.picture != null) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(h.picture!,
+                      width: 56,
+                      height: 56,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox(width: 56)),
+                ),
+                const SizedBox(width: 12),
+              ],
               Expanded(
-                child: Text('${h.name}${h.locked ? '  🔒' : ''}',
-                    style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.bold)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('★' * h.star,
+                        style: TextStyle(
+                            color: _starColor[h.star],
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold)),
+                    Text('${h.name}${h.locked ? '  🔒' : ''}',
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold)),
+                  ],
+                ),
               ),
             ]),
             const SizedBox(height: 12),
-            Text('Level ${h.level} / ${Hero.maxLevel}'),
-            Text('Power: ${h.power}'),
+            Text('Level ${h.level} / ${Hero.maxLevel} - Power ${h.power}'),
             const SizedBox(height: 8),
             Text('Skill: ${h.skill.name}',
                 style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -293,15 +352,28 @@ class _GamePageState extends State<GamePage>
     );
   }
 
+  void _toggleTeam(String id) async {
+    setState(() {
+      if (_teamIds.contains(id)) {
+        _teamIds.remove(id);
+      } else if (_teamIds.length < 5) {
+        _teamIds.add(id);
+      } else {
+        _snack('Team is full (max 5)');
+      }
+    });
+    await _game.saveTeam(_teamIds);
+  }
+
   Future<void> _battle() async {
-    if (_roster.isEmpty) {
-      _snack('Pull some heroes first!');
+    final team = _team;
+    if (team.isEmpty) {
+      _snack('Select your team first (tap heroes below)');
       return;
     }
     setState(() => _busy = true);
     try {
-      final hero = _roster[_dHeroIdx < _roster.length ? _dHeroIdx : 0];
-      final result = await _game.battle(hero, _dFloor);
+      final result = await _game.battle(team, _dFloor);
       if (!mounted) return;
       await Navigator.push(context,
           MaterialPageRoute(builder: (_) => BattlePage(result: result)));
@@ -313,27 +385,53 @@ class _GamePageState extends State<GamePage>
     }
   }
 
+  // ---------- admin actions ----------
+  Future<void> _run(Future<void> Function() f, String okMsg) async {
+    setState(() => _busy = true);
+    try {
+      await f();
+      _snack(okMsg);
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    _refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    if (!_loaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
     return Column(
       children: [
         Material(
           color: cs.surfaceContainerHighest,
           child: TabBar(
             controller: _tabs,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
             tabs: const [
               Tab(text: 'Daily'),
               Tab(text: 'Gacha'),
               Tab(text: 'Heroes'),
               Tab(text: 'Dungeon'),
+              Tab(text: 'Admin'),
             ],
           ),
         ),
         Expanded(
           child: IndexedStack(
             index: _tabs.index,
-            children: [_daily(), _gachaTab(), _heroesTab(), _dungeonTab()],
+            children: [
+              _daily(),
+              _gachaTab(),
+              _heroesTab(),
+              _dungeonTab(),
+              _adminTab(),
+            ],
           ),
         ),
       ],
@@ -371,8 +469,8 @@ class _GamePageState extends State<GamePage>
       _coinsBar(),
       _card('Summon heroes', [
         const Text(
-          'Rates: 1★ 34%, 2★ 35%, 3★ 25%, 4★ 5%, 5★ 1%. No pity, no '
-          'guarantees - every roll happens on the server.',
+          'Rates: 1★ 34%, 2★ 35%, 3★ 25%, 4★ 5%, 5★ 1%. No pity - every roll '
+          'happens on the server.',
         ),
         const SizedBox(height: 12),
         Wrap(
@@ -411,7 +509,7 @@ class _GamePageState extends State<GamePage>
           padding: const EdgeInsets.all(16),
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 3,
-            childAspectRatio: 0.72,
+            childAspectRatio: 0.62,
           ),
           itemCount: _roster.length,
           itemBuilder: (ctx, i) {
@@ -425,28 +523,36 @@ class _GamePageState extends State<GamePage>
                   borderRadius: BorderRadius.circular(10),
                   side: BorderSide(color: c, width: 1.5),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text('★' * h.star,
-                          style: TextStyle(
-                              color: c,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold)),
-                      Text(h.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 12, fontWeight: FontWeight.w600)),
-                      Text('Lv ${h.level} • ${h.power} pw',
-                          style: const TextStyle(fontSize: 10)),
-                      if (h.locked)
-                        const Icon(Icons.lock,
-                            size: 12, color: Colors.grey),
-                    ],
-                  ),
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: h.picture != null
+                          ? Image.network(h.picture!,
+                              fit: BoxFit.cover,
+                              width: double.infinity,
+                              errorBuilder: (_, _, _) => _starHeader(h, c))
+                          : _starHeader(h, c),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Column(
+                        children: [
+                          Text(h.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600)),
+                          Text('Lv ${h.level} • ${h.power} pw',
+                              style: const TextStyle(fontSize: 9)),
+                          if (h.locked)
+                            const Icon(Icons.lock,
+                                size: 11, color: Colors.grey),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -456,62 +562,207 @@ class _GamePageState extends State<GamePage>
     ]);
   }
 
+  Widget _starHeader(Hero h, Color c) {
+    return Container(
+      color: c.withValues(alpha: 0.15),
+      alignment: Alignment.center,
+      child: Text('★' * h.star,
+          style: TextStyle(
+              color: c, fontSize: 16, fontWeight: FontWeight.bold)),
+    );
+  }
+
   Widget _dungeonTab() {
     final maxFloor = _floor + 1;
+    final (cnt, pw) = GameService.waveInfo(_dFloor);
+    final notes = GameService.comboNotes(_team);
     return ListView(padding: const EdgeInsets.all(16), children: [
       _coinsBar(),
       _card('Dungeon', [
         Text('Highest floor cleared: ${_floor == 0 ? "none" : "$_floor"}'),
         const SizedBox(height: 8),
-        Text('Choose floor', style: Theme.of(context).textTheme.labelLarge),
-        if (maxFloor > 1)
-          Slider(
-            value: _dFloor.clamp(1, maxFloor).toDouble(),
-            min: 1,
-            max: maxFloor.toDouble(),
-            divisions: maxFloor - 1,
-            label: '$_dFloor',
-            onChanged: (v) => setState(() => _dFloor = v.round()),
-          )
-        else
-          const Text('Floor 1 (clear it to unlock deeper floors)'),
-        Text(
-            'Floor $_dFloor: ${GameService.enemyName(_dFloor)} - '
-            'power ${25 + _dFloor * 15} - reward ${40 + _dFloor * 12} coins'),
-        const SizedBox(height: 12),
-        if (_roster.isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: DropdownButton<int>(
-              value: _dHeroIdx < _roster.length ? _dHeroIdx : 0,
-              isExpanded: true,
-              underline: const SizedBox.shrink(),
-              items: [
-                for (var i = 0; i < _roster.length; i++)
-                  DropdownMenuItem(
-                    value: i,
-                    child: Text(
-                        '★${_roster[i].star} ${_roster[i].name} '
-                        '(Lv${_roster[i].level}, ${_roster[i].power})',
-                        overflow: TextOverflow.ellipsis),
-                  ),
-              ],
-              onChanged: (v) => setState(() => _dHeroIdx = v ?? 0),
-            ),
+        Slider(
+          value: _dFloor.clamp(1, maxFloor).toDouble(),
+          min: 1,
+          max: maxFloor.toDouble(),
+          divisions: maxFloor - 1 > 0 ? maxFloor - 1 : 1,
+          label: '$_dFloor',
+          onChanged: (v) => setState(() => _dFloor = v.round()),
+        ),
+        Text('Floor $_dFloor: $cnt monsters, $pw power each'
+            '${_dFloor % 5 == 0 ? " + BOSS" : ""}'
+            ' - reward ${40 + _dFloor * 12} coins'),
+      ]),
+      _card('Your team (max 5 - tap to add, order = attack order)', [
+        if (_team.isEmpty)
+          const Text('No heroes selected yet.'),
+        if (_team.isNotEmpty)
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (var i = 0; i < _team.length; i++)
+                Chip(
+                  avatar: CircleAvatar(
+                      backgroundColor: _starColor[_team[i].star], radius: 5),
+                  label: Text('${i + 1}. ${_team[i].name}'),
+                  onDeleted: () => _toggleTeam(_team[i].id),
+                ),
+            ],
           ),
-        const SizedBox(height: 12),
+        if (notes.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          for (final n in notes)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(children: [
+                const Icon(Icons.bolt, size: 14, color: Colors.orange),
+                const SizedBox(width: 6),
+                Expanded(
+                    child: Text(n, style: const TextStyle(fontSize: 12))),
+              ]),
+            ),
+        ],
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final h in _roster)
+              FilterChip(
+                label: Text('${h.name} ★${h.star}'),
+                selected: _teamIds.contains(h.id),
+                onSelected: (_) => _toggleTeam(h.id),
+              ),
+          ],
+        ),
+      ]),
+      _card('Battle', [
         FilledButton.icon(
           onPressed: _busy ? null : _battle,
           icon: const Icon(Icons.sports_kabaddi),
           label: const Text('Battle!'),
         ),
         const SizedBox(height: 8),
-        const Text('Watch the fight play out - or crank the speed / skip.',
+        const Text(
+            'Watch the fight - speed it up or skip. Enemy waves hit random '
+            'heroes, so keep the team alive with Vampiric/Bulwark.',
             style: TextStyle(fontSize: 12)),
+      ]),
+    ]);
+  }
+
+  Widget _adminTab() {
+    if (!_isAdmin) {
+      return ListView(padding: const EdgeInsets.all(16), children: [
+        _card('Admin', [
+          const Row(children: [
+            Icon(Icons.lock, size: 18),
+            SizedBox(width: 8),
+            Expanded(child: Text('Admin only. Your account is not an admin.')),
+          ]),
+        ]),
+      ]);
+    }
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      _card('Admin - give gold', [
+        TextField(
+            controller: _goldUser,
+            decoration: const InputDecoration(
+                labelText: 'Username', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _goldAmt,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+                labelText: 'Amount (negative to take)',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminGiveGold(_goldUser.text.trim(),
+                      int.tryParse(_goldAmt.text.trim()) ?? 0),
+                  'Gold updated'),
+          child: const Text('Give gold'),
+        ),
+      ]),
+      _card('Admin - heroes & art', [
+        Text('Add hero to gacha pool',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              initialValue: _hStar,
+              decoration: const InputDecoration(
+                  labelText: 'Star', border: OutlineInputBorder()),
+              items: [for (var s = 1; s <= 5; s++) DropdownMenuItem(value: s, child: Text('$s★'))],
+              onChanged: (v) => setState(() => _hStar = v ?? 3),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+                controller: _hName,
+                decoration: const InputDecoration(
+                    labelText: 'Name', border: OutlineInputBorder())),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, children: [
+          OutlinedButton(
+            onPressed: _busy
+                ? null
+                : () => _run(
+                    () => _game.adminAddHero(_hStar, _hName.text),
+                    'Hero added to pool'),
+            child: const Text('Add hero'),
+          ),
+          OutlinedButton(
+            onPressed: _busy
+                ? null
+                : () => _run(
+                    () => _game.adminRemoveHero(_rmName.text), 'Hero removed'),
+            child: const Text('Remove hero'),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _rmName,
+            decoration: const InputDecoration(
+                labelText: 'Hero name (for remove)', border: OutlineInputBorder())),
+        const Divider(height: 24),
+        Text('Set hero art (picture URL)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _artName,
+            decoration: const InputDecoration(
+                labelText: 'Hero name', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _artUrl,
+            decoration: const InputDecoration(
+                labelText: 'https://.../hero.png',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminSetArt(_artName.text, _artUrl.text.trim()),
+                  'Art saved'),
+          child: const Text('Save art'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Art applies to every card of that hero name - gacha, roster and '
+          'battle. Tip: upload images to Supabase Storage (public bucket) '
+          'and paste the public URL.',
+          style: TextStyle(fontSize: 12),
+        ),
       ]),
     ]);
   }
