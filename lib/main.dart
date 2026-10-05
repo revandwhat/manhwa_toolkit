@@ -391,6 +391,9 @@ class _RootPageState extends State<RootPage> {
   final _clNameCtrl = TextEditingController(text: '[Cleaned] File');
   bool _clBusy = false;
   String? _clSavedWhere;
+  bool _clAutofill = true;
+  bool _clAI = false;
+  String _clMime = 'image/jpeg';
 
   Future<void> _pickCleanImage() async {
     final r = await FilePicker.platform.pickFiles(type: FileType.image);
@@ -401,6 +404,7 @@ class _RootPageState extends State<RootPage> {
       return;
     }
     final imported = await _importCopy(path);
+    _clMime = imported.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
     try {
       final bytes = await File(imported).readAsBytes();
       final dims = await CleanService.dims(bytes);
@@ -418,15 +422,12 @@ class _RootPageState extends State<RootPage> {
   }
 
   Future<void> _onCleanTap(TapUpDetails d, double dispW, double dispH) async {
-    if (_clBytes == null || _clBusy || _clDims[0] == 0) return;
-    final px =
-        (d.localPosition.dx / dispW * _clDims[0]).round().clamp(0, _clDims[0] - 1);
-    final py =
-        (d.localPosition.dy / dispH * _clDims[1]).round().clamp(0, _clDims[1] - 1);
+    if (!_clAutofill || _clBytes == null || _clBusy || _clDims[0] == 0) return;
+    final px = (d.localPosition.dx / dispW * _clDims[0]).round().clamp(0, _clDims[0] - 1);
+    final py = (d.localPosition.dy / dispH * _clDims[1]).round().clamp(0, _clDims[1] - 1);
     setState(() => _clBusy = true);
     try {
-      final out = await CleanService.clean(_clBytes!,
-          x: px, y: py, tolerance: _clTol.round());
+      final out = await CleanService.clean(_clBytes!, x: px, y: py, tolerance: _clTol.round());
       if (!mounted) return;
       setState(() {
         _clUndo.add(_clBytes!);
@@ -435,6 +436,29 @@ class _RootPageState extends State<RootPage> {
       });
     } catch (e) {
       _snack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _clBusy = false);
+    }
+  }
+
+  Future<void> _runAiClean() async {
+    if (_clOriginal == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    setState(() => _clBusy = true);
+    try {
+      final out = await CleanService.aiClean(_clOriginal!, mime: _clMime);
+      if (!mounted) return;
+      setState(() {
+        _clUndo.add(_clBytes!);
+        if (_clUndo.length > 5) _clUndo.removeAt(0);
+        _clBytes = out;
+      });
+      _snack('AI clean done - check the result');
+    } catch (e) {
+      final msg = e.toString().replaceFirst('Exception: ', '');
+      _snack(msg == 'NO_KEY' ? 'Add a Gemini key (key icon, top right)' : msg);
     } finally {
       if (mounted) setState(() => _clBusy = false);
     }
@@ -457,14 +481,13 @@ class _RootPageState extends State<RootPage> {
   }
 
   // ---------- Typeset (TS) state ----------
-  String? _tsPath;
   Uint8List? _tsBytes;
   List<int> _tsDims = [0, 0];
   List<BoxItem> _tsItems = [];
-  String _tsLang = 'Indonesian';
   bool _tsBusy = false;
   final _tsNameCtrl = TextEditingController(text: '[Typeset] File');
   String? _tsSavedWhere;
+  bool _tsTapAdd = true;
 
   Future<void> _pickTsImage() async {
     final r = await FilePicker.platform.pickFiles(type: FileType.image);
@@ -475,12 +498,12 @@ class _RootPageState extends State<RootPage> {
       return;
     }
     final imported = await _importCopy(path);
+    TypesetService.registerSavedFonts();
     try {
       final bytes = await File(imported).readAsBytes();
       final dims = await CleanService.dims(bytes);
       if (!mounted) return;
       setState(() {
-        _tsPath = imported;
         _tsBytes = bytes;
         _tsDims = dims;
         _tsItems = [];
@@ -491,40 +514,18 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
-  Future<void> _tsRead() async {
+  void _tsAddAt(double fx, double fy) {
     if (_tsBytes == null) {
       _snack('Choose an image first');
       return;
     }
-    final key = await _gemini.getKey();
-    if (!mounted) return;
-    if (key == null || key.isEmpty) {
-      await _askForKey();
-      return;
-    }
-    setState(() {
-      _tsBusy = true;
-      _tsItems = [];
-    });
-    try {
-      final mime = _tsPath!.toLowerCase().endsWith('.png')
-          ? 'image/png'
-          : 'image/jpeg';
-      final items = await _gemini.readPanel(
-        _tsBytes!,
-        mime: mime,
-        lang: _langNames[_tsLang]!,
-      );
-      if (!mounted) return;
-      setState(() => _tsItems = items);
-      _snack(items.isEmpty
-          ? 'No text detected'
-          : '${items.length} box(es) - drag to adjust, tap to edit');
-    } catch (e) {
-      _snack(e.toString().replaceFirst('Exception: ', ''));
-    } finally {
-      if (mounted) setState(() => _tsBusy = false);
-    }
+    final it = BoxItem(
+      text: 'New text',
+      x: (fx - 0.2).clamp(0.0, 0.9).toDouble(),
+      y: (fy - 0.06).clamp(0.0, 0.9).toDouble(),
+    );
+    setState(() => _tsItems.add(it));
+    _tsEdit(_tsItems.indexOf(it));
   }
 
   void _tsAddBox() {
@@ -532,65 +533,318 @@ class _RootPageState extends State<RootPage> {
       _snack('Choose an image first');
       return;
     }
-    setState(() => _tsItems.add(BoxItem(translated: 'text')));
+    setState(() => _tsItems.add(BoxItem(text: 'New text')));
   }
 
-  Future<void> _editTsItem(int i) async {
-    final it = _tsItems[i];
-    final c = TextEditingController(text: it.translated);
-    double size = it.size;
-    final res = await showDialog<String>(
+  Future<String?> _loadFontDialog() async {
+    final c = TextEditingController();
+    final pick = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Edit text'),
+        title: const Text('Load custom font'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: c, maxLines: 4, autofocus: true),
-            const SizedBox(height: 8),
-            StatefulBuilder(
-              builder: (ctx, setD) => Slider(
-                value: size,
-                min: 0.15,
-                max: 0.9,
-                divisions: 15,
-                label: 'font size',
-                onChanged: (v) => setD(() => size = v),
+            TextField(
+              controller: c,
+              decoration: const InputDecoration(
+                hintText: 'https://.../myfont.ttf',
+                border: OutlineInputBorder(),
               ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final r = await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: ['ttf', 'otf'],
+                );
+                final p = r?.files.single.path;
+                if (p != null && ctx.mounted) Navigator.pop(ctx, 'file:$p');
+              },
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Pick .ttf / .otf file'),
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, 'del'),
-            child:
-                const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'ok'),
-            child: const Text('Save'),
-          ),
+              onPressed: () => Navigator.pop(ctx, 'url:${c.text.trim()}'),
+              child: const Text('Load URL')),
         ],
       ),
     );
+    if (pick == null || pick.isEmpty) return null;
+    try {
+      if (pick.startsWith('url:')) {
+        return await TypesetService.fontFromUrl(pick.substring(4));
+      }
+      return await TypesetService.fontFromFile(pick.substring(5));
+    } catch (e) {
+      _snack('Font load failed: $e');
+      return null;
+    }
+  }
+
+  Future<void> _tsEdit(int i) async {
+    final it = _tsItems[i];
+    final text = TextEditingController(text: it.text);
+    var font = it.font;
+    var fs = it.fs;
+    var color = it.color;
+    var bold = it.bold;
+    var italic = it.italic;
+    var outline = it.outline;
+    var outlineColor = it.outlineColor;
+    var outlineW = it.outlineW;
+    var glow = it.glow;
+    var glowColor = it.glowColor;
+    var glowR = it.glowR;
+    var blur = it.blur;
+    var rot = it.rot;
+    var gradient = it.gradient;
+    var color2 = it.color2;
+    var bw = it.w;
+    var bh = it.h;
+
+    const palette = [
+      Colors.white, Colors.black, Colors.red, Colors.orange,
+      Colors.yellow, Colors.green, Colors.cyan, Colors.blue,
+      Colors.purple, Colors.pink,
+    ];
+
+    late void Function(void Function()) setD;
+
+    Widget swatches(List<Color> cs, Color cur, void Function(Color) on) {
+      return Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          for (final c in cs)
+            GestureDetector(
+              onTap: () {
+                on(c);
+                setD(() {});
+              },
+              child: Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: c,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                      width: cur == c ? 3 : 1,
+                      color: cur == c ? Colors.teal : Colors.white24),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+
+    Widget sl(String label, double v, double min, double max, int div,
+        void Function(double) on, {String? extra}) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(extra == null ? label : '$label: $extra',
+              style: const TextStyle(fontSize: 12)),
+          Slider(
+            value: v.clamp(min, max).toDouble(),
+            min: min,
+            max: max,
+            divisions: div,
+            label: extra,
+            onChanged: (x) {
+              on(x);
+              setD(() {});
+            },
+          ),
+        ],
+      );
+    }
+
+    final fams = <String>{
+      ...TypesetService.fonts.keys,
+      for (final b in _tsItems)
+        if (b.font.startsWith('Custom_')) b.font,
+      if (font.startsWith('Custom_')) font,
+    };
+
+    final ok = await showDialog<Object?>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, sb) {
+          setD = sb;
+          return AlertDialog(
+            title: const Text('Style text'),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(controller: text, maxLines: 3, autofocus: true),
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    initialValue: fams.contains(font) ? font : 'Default',
+                    decoration: const InputDecoration(
+                        labelText: 'Font', border: OutlineInputBorder()),
+                    items: [
+                      for (final f in fams)
+                        DropdownMenuItem(
+                            value: f,
+                            child: Text(f,
+                                style: TextStyle(
+                                    fontFamily: f.startsWith('Custom_')
+                                        ? f
+                                        : null,
+                                    fontSize: 15))),
+                    ],
+                    onChanged: (v) {
+                      font = v ?? 'Default';
+                      setD(() {});
+                    },
+                  ),
+                  Row(children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final fam = await _loadFontDialog();
+                          if (fam != null) {
+                            font = fam;
+                            setD(() {});
+                          }
+                        },
+                        icon: const Icon(Icons.font_download, size: 18),
+                        label: const Text('Custom font',
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                    ),
+                  ]),
+                  sl('Font size', fs, 0.008, 0.12, 40, (v) => fs = v,
+                      extra: '${(fs * _tsDims[1]).round()} px'),
+                  sl('Box width', bw, 0.05, 1.0, 19, (v) => bw = v),
+                  sl('Box height', bh, 0.03, 0.6, 19, (v) => bh = v),
+                  const Text('Text color'),
+                  swatches(palette, color, (c) => color = c),
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Gradient (color -> color 2, vertical)'),
+                    value: gradient,
+                    onChanged: (v) {
+                      gradient = v;
+                      setD(() {});
+                    },
+                  ),
+                  if (gradient) ...[
+                    const Text('Gradient color 2'),
+                    swatches(palette, color2, (c) => color2 = c),
+                  ],
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Bold'),
+                    value: bold,
+                    onChanged: (v) {
+                      bold = v ?? false;
+                      setD(() {});
+                    },
+                  ),
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Italic'),
+                    value: italic,
+                    onChanged: (v) {
+                      italic = v ?? false;
+                      setD(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Outline'),
+                    value: outline,
+                    onChanged: (v) {
+                      outline = v;
+                      setD(() {});
+                    },
+                  ),
+                  if (outline) ...[
+                    const Text('Outline color'),
+                    swatches(palette, outlineColor, (c) => outlineColor = c),
+                    sl('Outline width', outlineW, 1, 8, 7, (v) => outlineW = v),
+                  ],
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Glow'),
+                    value: glow,
+                    onChanged: (v) {
+                      glow = v;
+                      setD(() {});
+                    },
+                  ),
+                  if (glow) ...[
+                    const Text('Glow color'),
+                    swatches(palette, glowColor, (c) => glowColor = c),
+                    sl('Glow strength', glowR, 2, 24, 11, (v) => glowR = v),
+                  ],
+                  sl('Blur', blur, 0, 12, 12, (v) => blur = v),
+                  sl('Rotation', rot, -30, 30, 60, (v) => rot = v,
+                      extra: '${rot.round()} deg'),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancel')),
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, 'del'),
+                  child: const Text('Delete',
+                      style: TextStyle(color: Colors.red))),
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Save')),
+            ],
+          );
+        },
+      ),
+    );
     if (!mounted) return;
-    if (res == 'del') {
+    if (ok == 'del') {
       setState(() => _tsItems.removeAt(i));
-    } else if (res == 'ok') {
+    } else if (ok == true) {
       setState(() {
-        it.translated = c.text.trim();
-        it.size = size;
+        it.text = text.text.trim().isEmpty ? it.text : text.text;
+        it.font = font;
+        it.fs = fs;
+        it.color = color;
+        it.bold = bold;
+        it.italic = italic;
+        it.outline = outline;
+        it.outlineColor = outlineColor;
+        it.outlineW = outlineW;
+        it.glow = glow;
+        it.glowColor = glowColor;
+        it.glowR = glowR;
+        it.blur = blur;
+        it.rot = rot;
+        it.gradient = gradient;
+        it.color2 = color2;
+        it.w = bw;
+        it.h = bh;
       });
     }
   }
 
   Future<void> _tsExport() async {
     if (_tsBytes == null || _tsItems.isEmpty) {
-      _snack('Nothing to export yet');
+      _snack('Add at least one text box first');
       return;
     }
     final dir = await _pickDestFolder('Pick where to save the typeset image');
@@ -1265,12 +1519,26 @@ class _RootPageState extends State<RootPage> {
         ]),
         const SizedBox(height: 8),
         const Text(
-          'Best on single panels with uniform bubbles (white/solid color). '
-          'Tap INSIDE a bubble to erase its text.',
+          'Pinch to zoom, drag to pan. Turn autofill ON, then tap inside a '
+          'bubble to erase its text.',
           style: TextStyle(fontSize: 13),
         ),
       ]),
-      _card('2. Tolerance', [
+      _card('2. Tools & toggles', [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Text autofill (tap to erase)'),
+          subtitle: const Text('OFF = taps do nothing (safe zooming)'),
+          value: _clAutofill,
+          onChanged: (v) => setState(() => _clAutofill = v),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('AI clean (image AI)'),
+          subtitle: const Text('Whole-panel text removal via Gemini'),
+          value: _clAI,
+          onChanged: (v) => setState(() => _clAI = v),
+        ),
         Text('Fill tolerance: ${_clTol.round()}'),
         Slider(
           value: _clTol,
@@ -1280,35 +1548,38 @@ class _RootPageState extends State<RootPage> {
           label: '${_clTol.round()}',
           onChanged: (v) => setState(() => _clTol = v),
         ),
-        const Text(
-          'Higher = grabs more shades (bigger fill). Lower = stricter.',
-          style: TextStyle(fontSize: 12),
-        ),
+        if (_clAI)
+          OutlinedButton.icon(
+            onPressed: _clBusy ? null : _runAiClean,
+            icon: const Icon(Icons.auto_fix_high),
+            label: const Text('AI clean whole panel'),
+          ),
       ]),
-      _card('3. Tap bubbles to erase', [
+      _card('3. Canvas', [
         if (_clBytes == null)
-          const Text('Pick an image first.',
-              style: TextStyle(fontSize: 13))
+          const Text('Pick an image first.', style: TextStyle(fontSize: 13))
         else
-          LayoutBuilder(builder: (ctx, cons) {
-            final W = cons.maxWidth;
-            final H =
-                _clDims[1] == 0 ? 200.0 : W * _clDims[1] / _clDims[0];
-            return GestureDetector(
-              onTapUp: (d) => _onCleanTap(d, W, H),
-              child: SizedBox(
-                width: W,
-                height: H,
-                child: Stack(children: [
-                  Image.memory(_clBytes!, fit: BoxFit.fill),
-                  if (_clBusy)
-                    const Positioned.fill(
-                      child: Center(child: CircularProgressIndicator()),
-                    ),
-                ]),
+          Stack(children: [
+            LayoutBuilder(builder: (ctx, cons) {
+              final W = cons.maxWidth;
+              final H = _clDims[1] == 0 ? 200.0 : W * _clDims[1] / _clDims[0];
+              return InteractiveViewer(
+                maxScale: 8,
+                child: SizedBox(
+                  width: W,
+                  height: H,
+                  child: GestureDetector(
+                    onTapUp: (d) => _onCleanTap(d, W, H),
+                    child: Image.memory(_clBytes!, fit: BoxFit.fill),
+                  ),
+                ),
+              );
+            }),
+            if (_clBusy)
+              const Positioned.fill(
+                child: Center(child: CircularProgressIndicator()),
               ),
-            );
-          }),
+          ]),
         if (_clSavedWhere != null) ...[
           const SizedBox(height: 8),
           SelectableText('Saved to: $_clSavedWhere',
@@ -1344,9 +1615,7 @@ class _RootPageState extends State<RootPage> {
         TextField(
           controller: _clNameCtrl,
           decoration: const InputDecoration(
-            labelText: 'File name',
-            border: OutlineInputBorder(),
-          ),
+              labelText: 'File name', border: OutlineInputBorder()),
         ),
         const SizedBox(height: 12),
         FilledButton.icon(
@@ -1373,59 +1642,53 @@ class _RootPageState extends State<RootPage> {
           ),
         ]),
       ]),
-      _card('2. Read & translate (AI)', [
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: _langCodes.keys
-              .map((k) => ChoiceChip(
-                    label: Text(k),
-                    selected: _tsLang == k,
-                    onSelected: (_) => setState(() => _tsLang = k),
-                  ))
-              .toList(),
-        ),
-        const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: _tsBusy ? null : _tsRead,
-          icon: const Icon(Icons.auto_fix_high),
-          label: Text(_tsBusy ? 'Reading panel...' : 'Read & translate'),
-        ),
-        if (_tsBusy)
-          const Padding(
-            padding: EdgeInsets.only(top: 12),
-            child: LinearProgressIndicator(),
+      _card('2. Add & style text', [
+        Row(children: [
+          Expanded(
+            child: FilledButton.tonalIcon(
+              onPressed: _tsBusy ? null : _tsAddBox,
+              icon: const Icon(Icons.text_fields),
+              label: const Text('Add text box'),
+            ),
           ),
+        ]),
         const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: _tsBusy ? null : _tsAddBox,
-          icon: const Icon(Icons.add),
-          label: const Text('Add empty box (for missed text)'),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Tap image to place text'),
+          subtitle: const Text(
+              'Tap anywhere on the preview - a box appears there and the '
+              'style editor opens'),
+          value: _tsTapAdd,
+          onChanged: (v) => setState(() => _tsTapAdd = v),
         ),
-        const SizedBox(height: 8),
         const Text(
-          'Boxes are AI-placed and approximate: drag to move, tap to edit '
-          'text/size (or delete).',
+          'Tap a box to edit: text, custom font (URL or .ttf file), size, '
+          'color, gradient, bold/italic, outline, glow, blur, rotation.',
           style: TextStyle(fontSize: 12),
         ),
       ]),
-      _card('3. Preview & edit', [
+      _card('3. Preview', [
         if (_tsBytes == null)
           const Text('Pick an image first.', style: TextStyle(fontSize: 13))
         else
           LayoutBuilder(builder: (ctx, cons) {
             final W = cons.maxWidth;
-            final H =
-                _tsDims[1] == 0 ? 240.0 : W * _tsDims[1] / _tsDims[0];
+            final H = _tsDims[1] == 0 ? 240.0 : W * _tsDims[1] / _tsDims[0];
             return SizedBox(
               width: W,
               height: H,
-              child: Stack(children: [
-                Positioned.fill(
-                  child: Image.memory(_tsBytes!, fit: BoxFit.fill),
-                ),
-                for (var i = 0; i < _tsItems.length; i++) _tsBox(i, W, H),
-              ]),
+              child: GestureDetector(
+                onTapUp: _tsTapAdd
+                    ? (d) => _tsAddAt(
+                        d.localPosition.dx / W, d.localPosition.dy / H)
+                    : null,
+                child: Stack(children: [
+                  Positioned.fill(
+                      child: Image.memory(_tsBytes!, fit: BoxFit.fill)),
+                  for (var i = 0; i < _tsItems.length; i++) _tsBox(i, W, H),
+                ]),
+              ),
             );
           }),
         if (_tsSavedWhere != null) ...[
@@ -1438,9 +1701,7 @@ class _RootPageState extends State<RootPage> {
         TextField(
           controller: _tsNameCtrl,
           decoration: const InputDecoration(
-            labelText: 'File name',
-            border: OutlineInputBorder(),
-          ),
+              labelText: 'File name', border: OutlineInputBorder()),
         ),
         const SizedBox(height: 12),
         FilledButton.icon(
@@ -1448,19 +1709,69 @@ class _RootPageState extends State<RootPage> {
           icon: const Icon(Icons.save_alt),
           label: const Text('Export PNG (pick folder)'),
         ),
+        const SizedBox(height: 8),
+        const Text(
+          'Custom fonts: loads from URL or file, then works offline. '
+          'Google Fonts need internet the first time per font.',
+          style: TextStyle(fontSize: 12),
+        ),
       ]),
     ];
   }
 
   Widget _tsBox(int i, double W, double H) {
     final it = _tsItems[i];
+    final fontPx = (it.fs * H).clamp(6.0, 300.0).toDouble();
+    final base = (TypesetService.fonts[it.font] ??
+            TypesetService.fonts['Default']!)()
+        .copyWith(
+      color: it.color,
+      fontSize: fontPx,
+      fontWeight: it.bold ? FontWeight.bold : FontWeight.normal,
+      fontStyle: it.italic ? FontStyle.italic : FontStyle.normal,
+      height: 1.1,
+    );
+    final shadows = <Shadow>[
+      if (it.glow)
+        Shadow(
+            color: it.glowColor,
+            blurRadius: it.glowR * (_tsDims[0] > 0 ? W / _tsDims[0] : 1)),
+      if (it.outline)
+        for (final o in const [
+          Offset(1, 0), Offset(-1, 0), Offset(0, 1), Offset(0, -1),
+          Offset(1, 1), Offset(-1, -1), Offset(1, -1), Offset(-1, 1),
+        ])
+          Shadow(color: it.outlineColor, offset: o * (it.outlineW / 2)),
+    ];
+    Widget txt = Text(
+      it.text,
+      textAlign: TextAlign.center,
+      style: base.copyWith(shadows: shadows),
+    );
+    if (it.gradient) {
+      txt = ShaderMask(
+        shaderCallback: (b) => LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [it.color, it.color2],
+        ).createShader(b),
+        blendMode: BlendMode.srcIn,
+        child: txt,
+      );
+    }
+    if (it.rot != 0) {
+      txt = Transform.rotate(
+          angle: it.rot * 3.141592653589793 / 180,
+          alignment: Alignment.center,
+          child: txt);
+    }
     return Positioned(
       left: (it.x * W).clamp(0.0, W).toDouble(),
       top: (it.y * H).clamp(0.0, H).toDouble(),
       width: (it.w * W).clamp(20.0, W).toDouble(),
       height: (it.h * H).clamp(14.0, H).toDouble(),
       child: GestureDetector(
-        onTap: () => _editTsItem(i),
+        onTap: () => _tsEdit(i),
         onPanUpdate: (d) {
           setState(() {
             it.x = (it.x + d.delta.dx / W).clamp(0.0, 1.0).toDouble();
@@ -1468,24 +1779,13 @@ class _RootPageState extends State<RootPage> {
           });
         },
         child: Container(
-          padding: const EdgeInsets.all(3),
+          alignment: Alignment.center,
+          padding: const EdgeInsets.all(2),
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: Colors.black26),
+            border: Border.all(
+                color: Colors.cyan.withValues(alpha: 0.6), width: 1),
           ),
-          child: Center(
-            child: Text(
-              it.translated,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.black,
-                fontSize:
-                    (it.size * it.h * H).clamp(6.0, 200.0).toDouble(),
-                height: 1.1,
-              ),
-            ),
-          ),
+          child: txt,
         ),
       ),
     );

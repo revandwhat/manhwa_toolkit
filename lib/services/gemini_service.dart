@@ -126,7 +126,7 @@ class GeminiService {
       return list.map((e) {
         final j = e as Map<String, dynamic>;
         return BoxItem(
-          translated: (j['translated'] ?? '').toString(),
+          text: (j['translated'] ?? '').toString(),
           x: _d(j['x'], 0.3),
           y: _d(j['y'], 0.3),
           w: _d(j['w'], 0.4).clamp(0.04, 1.0).toDouble(),

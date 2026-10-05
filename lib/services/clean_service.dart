@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show compute;
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 // Flood-fill + dilate + fill, on raw RGBA bytes. Runs in an isolate.
 Uint8List _clean(Map<String, dynamic> a) {
@@ -59,7 +62,6 @@ Uint8List _clean(Map<String, dynamic> a) {
     }
   }
 
-  // Dilate the mask so text strokes touching the background get covered too.
   const r = 2;
   final dil = Uint8List.fromList(mask);
   for (var y = 0; y < h; y++) {
@@ -83,7 +85,6 @@ Uint8List _clean(Map<String, dynamic> a) {
     }
   }
 
-  // Fill with the average color of the bubble interior (white-ish).
   final fr = cnt > 0 ? ar ~/ cnt : 255;
   final fg = cnt > 0 ? ag ~/ cnt : 255;
   final fb = cnt > 0 ? ab ~/ cnt : 255;
@@ -100,7 +101,6 @@ Uint8List _clean(Map<String, dynamic> a) {
 }
 
 class CleanService {
-  /// [width, height] of an encoded image (png/jpg/webp).
   static Future<List<int>> dims(Uint8List bytes) async {
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
@@ -109,7 +109,6 @@ class CleanService {
     return d;
   }
 
-  /// Returns a new PNG with the tapped region wiped to its background color.
   static Future<Uint8List> clean(
     Uint8List bytes, {
     required int x,
@@ -120,8 +119,7 @@ class CleanService {
     final frame = await codec.getNextFrame();
     final img = frame.image;
     final w = img.width, h = img.height;
-    final data =
-        await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
     final rgba = data!.buffer.asUint8List();
     img.dispose();
 
@@ -146,5 +144,64 @@ class CleanService {
     final out = await f2.image.toByteData(format: ui.ImageByteFormat.png);
     f2.image.dispose();
     return out!.buffer.asUint8List();
+  }
+
+  /// AI clean: sends the whole panel to Gemini's image model and gets back
+  /// a text-free version. Needs a key. If the model name 404s, put the
+  /// image model name the error suggests into _imgModel.
+  static const _imgModel = 'gemini-3.8-flash-image';
+
+  static Future<Uint8List> aiClean(Uint8List bytes,
+      {required String mime}) async {
+    final key =
+        (await SharedPreferences.getInstance()).getString('gemini_key');
+    if (key == null || key.isEmpty) throw Exception('NO_KEY');
+
+    final res = await http
+        .post(
+          Uri.parse(
+              'https://generativelanguage.googleapis.com/v1beta/models/$_imgModel:generateContent?key=$key'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'contents': [
+              {
+                'parts': [
+                  {
+                    'text': 'Remove ALL text from this comic panel: speech '
+                        'bubbles, narration boxes, sound effects, watermarks. '
+                        'Reconstruct the art and bubble interiors cleanly. '
+                        'Output only the edited image.'
+                  },
+                  {
+                    'inline_data': {
+                      'mime_type': mime,
+                      'data': base64Encode(bytes)
+                    }
+                  },
+                ]
+              }
+            ],
+            'generationConfig': {'responseModalities': ['IMAGE']},
+          }),
+        )
+        .timeout(const Duration(seconds: 180));
+
+    if (res.statusCode != 200) {
+      throw Exception('AI clean ${res.statusCode}: ${res.body}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final cands = data['candidates'] as List?;
+    if (cands == null || cands.isEmpty) {
+      throw Exception('AI clean: empty response');
+    }
+    final parts = cands[0]['content']['parts'] as List;
+    for (final p in parts) {
+      final m = p as Map<String, dynamic>;
+      final inline = (m['inlineData'] ?? m['inline_data']) as Map<String, dynamic>?;
+      if (inline != null && inline['data'] != null) {
+        return base64Decode(inline['data'] as String);
+      }
+    }
+    throw Exception('AI clean returned no image: ${res.body.substring(0, res.body.length.clamp(0, 300))}');
   }
 }
