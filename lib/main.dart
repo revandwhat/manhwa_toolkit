@@ -43,6 +43,21 @@ class RootPage extends StatefulWidget {
 }
 
 class _RootPageState extends State<RootPage> {
+  bool _permAsked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (_permAsked) return;
+      _permAsked = true;
+      try {
+        if (!await Permission.manageExternalStorage.isGranted) {
+          await Permission.manageExternalStorage.request();
+        }
+      } catch (_) {}
+    });
+  }
   int _tab = 0;
   String _tool = 'Stitch';
 
@@ -385,6 +400,7 @@ class _RootPageState extends State<RootPage> {
   // ---------- Clean (CL) state ----------
   Uint8List? _clOriginal;
   Uint8List? _clBytes;
+  String? _clPath;
   List<int> _clDims = [0, 0];
   final List<Uint8List> _clUndo = [];
   double _clTol = 55;
@@ -392,8 +408,12 @@ class _RootPageState extends State<RootPage> {
   bool _clBusy = false;
   String? _clSavedWhere;
   bool _clAutofill = true;
-  bool _clAI = false;
   String _clMime = 'image/jpeg';
+  List<Stroke> _clStrokes = [];
+  bool _clBrush = false;
+  Color _clBrushColor = Colors.white;
+  double _clBrushSize = 0.02;
+  Stroke? _clCurrent;
 
   Future<void> _pickCleanImage() async {
     final r = await FilePicker.platform.pickFiles(type: FileType.image);
@@ -412,8 +432,10 @@ class _RootPageState extends State<RootPage> {
       setState(() {
         _clOriginal = bytes;
         _clBytes = bytes;
+        _clPath = imported;
         _clDims = dims;
         _clUndo.clear();
+        _clStrokes = [];
         _clSavedWhere = null;
       });
     } catch (_) {
@@ -421,8 +443,13 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
+  List<double> _clFrac(Offset o, double W, double H) => [
+        (o.dx / W).clamp(0.0, 1.0).toDouble(),
+        (o.dy / H).clamp(0.0, 1.0).toDouble(),
+      ];
+
   Future<void> _onCleanTap(TapUpDetails d, double dispW, double dispH) async {
-    if (!_clAutofill || _clBytes == null || _clBusy || _clDims[0] == 0) return;
+    if (_clBrush || !_clAutofill || _clBytes == null || _clBusy || _clDims[0] == 0) return;
     final px = (d.localPosition.dx / dispW * _clDims[0]).round().clamp(0, _clDims[0] - 1);
     final py = (d.localPosition.dy / dispH * _clDims[1]).round().clamp(0, _clDims[1] - 1);
     setState(() => _clBusy = true);
@@ -441,6 +468,35 @@ class _RootPageState extends State<RootPage> {
     }
   }
 
+  void _clPushUndo() {
+    if (_clBytes != null) {
+      _clUndo.add(_clBytes!);
+      if (_clUndo.length > 5) _clUndo.removeAt(0);
+    }
+  }
+
+  Future<void> _clAutoOffline() async {
+    if (_clPath == null || _clOriginal == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    setState(() => _clBusy = true);
+    try {
+      final out = await CleanService.autoCleanOffline(_clPath!, _clOriginal!);
+      if (!mounted) return;
+      setState(() {
+        _clPushUndo();
+        _clBytes = out;
+        _clStrokes = [];
+      });
+      _snack('Offline auto-clean done - brush the leftovers');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _clBusy = false);
+    }
+  }
+
   Future<void> _runAiClean() async {
     if (_clOriginal == null) {
       _snack('Choose an image first');
@@ -451,11 +507,11 @@ class _RootPageState extends State<RootPage> {
       final out = await CleanService.aiClean(_clOriginal!, mime: _clMime);
       if (!mounted) return;
       setState(() {
-        _clUndo.add(_clBytes!);
-        if (_clUndo.length > 5) _clUndo.removeAt(0);
+        _clPushUndo();
         _clBytes = out;
+        _clStrokes = [];
       });
-      _snack('AI clean done - check the result');
+      _snack('AI clean done');
     } catch (e) {
       final msg = e.toString().replaceFirst('Exception: ', '');
       _snack(msg == 'NO_KEY' ? 'Add a Gemini key (key icon, top right)' : msg);
@@ -470,13 +526,20 @@ class _RootPageState extends State<RootPage> {
     if (dir == null) return;
     final base = _sanitize(_clNameCtrl.text);
     final out = await _unique('$dir/$base.png');
+    setState(() => _clBusy = true);
     try {
-      await File(out).writeAsBytes(_clBytes!);
+      Uint8List toSave = _clBytes!;
+      if (_clStrokes.isNotEmpty) {
+        toSave = await TypesetService.bakeStrokes(_clBytes!, _clStrokes);
+      }
+      await File(out).writeAsBytes(toSave);
       if (!mounted) return;
       setState(() => _clSavedWhere = out);
       _snack('Done');
     } catch (e) {
       _snack('Save failed: $e');
+    } finally {
+      if (mounted) setState(() => _clBusy = false);
     }
   }
 
@@ -484,6 +547,13 @@ class _RootPageState extends State<RootPage> {
   Uint8List? _tsBytes;
   List<int> _tsDims = [0, 0];
   List<BoxItem> _tsItems = [];
+  List<Stroke> _tsStrokes = [];
+  bool _tsBrush = false;
+  Color _tsBrushColor = Colors.white;
+  double _tsBrushSize = 0.02;
+  Stroke? _tsCurrent;
+  bool _tsCrop = false;
+  double _cropL = 0, _cropT = 0, _cropR = 0, _cropB = 0;
   bool _tsBusy = false;
   final _tsNameCtrl = TextEditingController(text: '[Typeset] File');
   String? _tsSavedWhere;
@@ -507,12 +577,18 @@ class _RootPageState extends State<RootPage> {
         _tsBytes = bytes;
         _tsDims = dims;
         _tsItems = [];
+        _tsStrokes = [];
         _tsSavedWhere = null;
       });
     } catch (_) {
       _snack('Could not read that image');
     }
   }
+
+  List<double> _tsFrac(Offset o, double W, double H) => [
+        (o.dx / W).clamp(0.0, 1.0).toDouble(),
+        (o.dy / H).clamp(0.0, 1.0).toDouble(),
+      ];
 
   void _tsAddAt(double fx, double fy) {
     if (_tsBytes == null) {
@@ -534,6 +610,35 @@ class _RootPageState extends State<RootPage> {
       return;
     }
     setState(() => _tsItems.add(BoxItem(text: 'New text')));
+  }
+
+  Future<void> _tsApplyCrop() async {
+    if (_tsBytes == null) return;
+    if (_cropL + _cropR >= 0.98 || _cropT + _cropB >= 0.98) {
+      _snack('Crop region too small');
+      return;
+    }
+    setState(() => _tsBusy = true);
+    try {
+      final out = await TypesetService.cropImage(
+          _tsBytes!, Rect.fromLTRB(_cropL, _cropT, 1 - _cropR, 1 - _cropB));
+      if (!mounted) return;
+      final dims = await CleanService.dims(out);
+      setState(() {
+        _tsBytes = out;
+        _tsDims = dims;
+        _tsItems = [];
+        _tsStrokes = [];
+        _tsCrop = false;
+        _cropL = _cropT = _cropR = _cropB = 0;
+        _tsSavedWhere = null;
+      });
+      _snack('Cropped (text boxes reset - add them on the cropped image)');
+    } catch (e) {
+      _snack('Crop failed: $e');
+    } finally {
+      if (mounted) setState(() => _tsBusy = false);
+    }
   }
 
   Future<String?> _loadFontDialog() async {
@@ -732,7 +837,7 @@ class _RootPageState extends State<RootPage> {
                   SwitchListTile(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('Gradient (color -> color 2, vertical)'),
+                    title: const Text('Gradient (vertical, color to color 2)'),
                     value: gradient,
                     onChanged: (v) {
                       gradient = v;
@@ -843,8 +948,12 @@ class _RootPageState extends State<RootPage> {
   }
 
   Future<void> _tsExport() async {
-    if (_tsBytes == null || _tsItems.isEmpty) {
-      _snack('Add at least one text box first');
+    if (_tsBytes == null) {
+      _snack('Choose an image first');
+      return;
+    }
+    if (_tsItems.isEmpty && _tsStrokes.isEmpty) {
+      _snack('Nothing to export yet');
       return;
     }
     final dir = await _pickDestFolder('Pick where to save the typeset image');
@@ -852,7 +961,7 @@ class _RootPageState extends State<RootPage> {
     final base = _sanitize(_tsNameCtrl.text);
     setState(() => _tsBusy = true);
     try {
-      final png = await TypesetService.render(_tsBytes!, _tsItems);
+      final png = await TypesetService.render(_tsBytes!, _tsItems, _tsStrokes);
       final out = await _unique('$dir/$base.png');
       await File(out).writeAsBytes(png);
       if (!mounted) return;
@@ -1519,25 +1628,111 @@ class _RootPageState extends State<RootPage> {
         ]),
         const SizedBox(height: 8),
         const Text(
-          'Pinch to zoom, drag to pan. Turn autofill ON, then tap inside a '
-          'bubble to erase its text.',
+          'Auto-clean first (offline or AI), then brush the hard leftovers: '
+          'transparent bubbles and SFX outside bubbles.',
           style: TextStyle(fontSize: 13),
         ),
       ]),
-      _card('2. Tools & toggles', [
+      _card('2. Auto clean', [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _clBusy ? null : _clAutoOffline,
+              icon: const Icon(Icons.offline_bolt),
+              label: const Text('Offline (no key)'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _clBusy ? null : _runAiClean,
+              icon: const Icon(Icons.auto_fix_high),
+              label: const Text('AI (Gemini)'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Offline: on-device OCR finds text and fills it with the '
+          'surrounding color (first run downloads OCR models, online once). '
+          'AI: whole-panel reconstruction, needs a key.',
+          style: TextStyle(fontSize: 12),
+        ),
+      ]),
+      _card('3. Redraw brush (for hard bubbles)', [
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('Text autofill (tap to erase)'),
-          subtitle: const Text('OFF = taps do nothing (safe zooming)'),
+          title: const Text('Brush mode'),
+          subtitle: const Text(
+              'Paint over text manually. While ON: pinch-zoom is paused and '
+              'tap-autofill is off.'),
+          value: _clBrush,
+          onChanged: (v) => setState(() => _clBrush = v),
+        ),
+        const Text('Brush color'),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final c in const [
+              Colors.white, Colors.black, Colors.grey, Colors.blueGrey,
+            ])
+              GestureDetector(
+                onTap: () => setState(() => _clBrushColor = c),
+                child: Container(
+                  width: 26,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: c,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                        width: _clBrushColor == c ? 3 : 1,
+                        color: _clBrushColor == c
+                            ? Colors.teal
+                            : Colors.white24),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        Text('Brush size: ${(_clBrushSize * 100).toStringAsFixed(1)}%'),
+        Slider(
+          value: _clBrushSize,
+          min: 0.005,
+          max: 0.08,
+          divisions: 15,
+          label: (_clBrushSize * 100).toStringAsFixed(1),
+          onChanged: (v) => setState(() => _clBrushSize = v),
+        ),
+        Row(children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _clStrokes.isEmpty
+                  ? null
+                  : () => setState(() {
+                        _clStrokes.removeLast();
+                      }),
+              icon: const Icon(Icons.undo),
+              label: const Text('Undo stroke'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _clStrokes.isEmpty
+                  ? null
+                  : () => setState(() => _clStrokes = []),
+              icon: const Icon(Icons.layers_clear),
+              label: const Text('Clear strokes'),
+            ),
+          ),
+        ]),
+      ]),
+      _card('4. Tap-autofill (normal bubbles)', [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Tap to erase (flood fill)'),
           value: _clAutofill,
           onChanged: (v) => setState(() => _clAutofill = v),
-        ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('AI clean (image AI)'),
-          subtitle: const Text('Whole-panel text removal via Gemini'),
-          value: _clAI,
-          onChanged: (v) => setState(() => _clAI = v),
         ),
         Text('Fill tolerance: ${_clTol.round()}'),
         Slider(
@@ -1548,14 +1743,8 @@ class _RootPageState extends State<RootPage> {
           label: '${_clTol.round()}',
           onChanged: (v) => setState(() => _clTol = v),
         ),
-        if (_clAI)
-          OutlinedButton.icon(
-            onPressed: _clBusy ? null : _runAiClean,
-            icon: const Icon(Icons.auto_fix_high),
-            label: const Text('AI clean whole panel'),
-          ),
       ]),
-      _card('3. Canvas', [
+      _card('5. Canvas', [
         if (_clBytes == null)
           const Text('Pick an image first.', style: TextStyle(fontSize: 13))
         else
@@ -1564,13 +1753,44 @@ class _RootPageState extends State<RootPage> {
               final W = cons.maxWidth;
               final H = _clDims[1] == 0 ? 200.0 : W * _clDims[1] / _clDims[0];
               return InteractiveViewer(
+                panEnabled: !_clBrush,
+                scaleEnabled: !_clBrush,
                 maxScale: 8,
                 child: SizedBox(
                   width: W,
                   height: H,
                   child: GestureDetector(
                     onTapUp: (d) => _onCleanTap(d, W, H),
-                    child: Image.memory(_clBytes!, fit: BoxFit.fill),
+                    onPanStart: _clBrush
+                        ? (d) {
+                            final f = _clFrac(d.localPosition, W, H);
+                            setState(() {
+                              _clCurrent = Stroke(
+                                  pts: [f],
+                                  color: _clBrushColor,
+                                  widthFrac: _clBrushSize);
+                              _clStrokes.add(_clCurrent!);
+                            });
+                          }
+                        : null,
+                    onPanUpdate: _clBrush
+                        ? (d) {
+                            setState(() {
+                              _clCurrent?.pts
+                                  .add(_clFrac(d.localPosition, W, H));
+                            });
+                          }
+                        : null,
+                    child: Stack(children: [
+                      Positioned.fill(
+                          child: Image.memory(_clBytes!, fit: BoxFit.fill)),
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: StrokesPainter(_clStrokes),
+                          size: Size(W, H),
+                        ),
+                      ),
+                    ]),
                   ),
                 ),
               );
@@ -1586,32 +1806,7 @@ class _RootPageState extends State<RootPage> {
               style: Theme.of(context).textTheme.bodySmall),
         ],
       ]),
-      _card('4. Fix & save', [
-        Wrap(
-          spacing: 8,
-          children: [
-            OutlinedButton.icon(
-              onPressed: (_clUndo.isEmpty || _clBusy)
-                  ? null
-                  : () => setState(() {
-                        _clBytes = _clUndo.removeLast();
-                      }),
-              icon: const Icon(Icons.undo),
-              label: const Text('Undo'),
-            ),
-            OutlinedButton.icon(
-              onPressed: (_clOriginal == null || _clBusy)
-                  ? null
-                  : () => setState(() {
-                        _clBytes = _clOriginal;
-                        _clUndo.clear();
-                      }),
-              icon: const Icon(Icons.restart_alt),
-              label: const Text('Reset'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
+      _card('6. Save', [
         TextField(
           controller: _clNameCtrl,
           decoration: const InputDecoration(
@@ -1623,6 +1818,9 @@ class _RootPageState extends State<RootPage> {
           icon: const Icon(Icons.save_alt),
           label: const Text('Save cleaned PNG'),
         ),
+        const SizedBox(height: 8),
+        const Text('Brush strokes are baked into the saved PNG.',
+            style: TextStyle(fontSize: 12)),
       ]),
     ];
   }
@@ -1642,7 +1840,73 @@ class _RootPageState extends State<RootPage> {
           ),
         ]),
       ]),
-      _card('2. Add & style text', [
+      _card('2. Brush (cover original text)', [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Brush mode'),
+          subtitle: const Text('Paint over the text you want to replace.'),
+          value: _tsBrush,
+          onChanged: (v) => setState(() => _tsBrush = v),
+        ),
+        const Text('Brush color'),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final c in const [
+              Colors.white, Colors.black, Colors.grey, Colors.blueGrey,
+            ])
+              GestureDetector(
+                onTap: () => setState(() => _tsBrushColor = c),
+                child: Container(
+                  width: 26,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: c,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                        width: _tsBrushColor == c ? 3 : 1,
+                        color: _tsBrushColor == c
+                            ? Colors.teal
+                            : Colors.white24),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        Text('Brush size: ${(_tsBrushSize * 100).toStringAsFixed(1)}%'),
+        Slider(
+          value: _tsBrushSize,
+          min: 0.005,
+          max: 0.08,
+          divisions: 15,
+          label: (_tsBrushSize * 100).toStringAsFixed(1),
+          onChanged: (v) => setState(() => _tsBrushSize = v),
+        ),
+      ]),
+      _card('3. Crop', [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Crop mode'),
+          subtitle: const Text('Trim the image edges. Resets boxes/strokes '
+              'when applied.'),
+          value: _tsCrop,
+          onChanged: (v) => setState(() => _tsCrop = v),
+        ),
+        if (_tsCrop) ...[
+          _cropSlider('Left', _cropL, (v) => _cropL = v),
+          _cropSlider('Top', _cropT, (v) => _cropT = v),
+          _cropSlider('Right', _cropR, (v) => _cropR = v),
+          _cropSlider('Bottom', _cropB, (v) => _cropB = v),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: _tsBusy ? null : _tsApplyCrop,
+            icon: const Icon(Icons.crop),
+            label: const Text('Apply crop'),
+          ),
+        ],
+      ]),
+      _card('4. Add & style text', [
         Row(children: [
           Expanded(
             child: FilledButton.tonalIcon(
@@ -1656,19 +1920,18 @@ class _RootPageState extends State<RootPage> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Tap image to place text'),
-          subtitle: const Text(
-              'Tap anywhere on the preview - a box appears there and the '
-              'style editor opens'),
+          subtitle: const Text('A box appears where you tap and the style '
+              'editor opens'),
           value: _tsTapAdd,
           onChanged: (v) => setState(() => _tsTapAdd = v),
         ),
         const Text(
-          'Tap a box to edit: text, custom font (URL or .ttf file), size, '
-          'color, gradient, bold/italic, outline, glow, blur, rotation.',
+          'Tap a box to edit: text, custom font (URL or .ttf), size, color, '
+          'gradient, bold/italic, outline, glow, blur, rotation.',
           style: TextStyle(fontSize: 12),
         ),
       ]),
-      _card('3. Preview', [
+      _card('5. Preview', [
         if (_tsBytes == null)
           const Text('Pick an image first.', style: TextStyle(fontSize: 13))
         else
@@ -1679,14 +1942,46 @@ class _RootPageState extends State<RootPage> {
               width: W,
               height: H,
               child: GestureDetector(
-                onTapUp: _tsTapAdd
-                    ? (d) => _tsAddAt(
-                        d.localPosition.dx / W, d.localPosition.dy / H)
+                onTapUp: (!_tsBrush && _tsTapAdd && !_tsCrop)
+                    ? (d) => _tsAddAt(d.localPosition.dx / W,
+                        d.localPosition.dy / H)
+                    : null,
+                onPanStart: _tsBrush
+                    ? (d) {
+                        final f = _tsFrac(d.localPosition, W, H);
+                        setState(() {
+                          _tsCurrent = Stroke(
+                              pts: [f],
+                              color: _tsBrushColor,
+                              widthFrac: _tsBrushSize);
+                          _tsStrokes.add(_tsCurrent!);
+                        });
+                      }
+                    : null,
+                onPanUpdate: _tsBrush
+                    ? (d) {
+                        setState(() {
+                          _tsCurrent?.pts.add(_tsFrac(d.localPosition, W, H));
+                        });
+                      }
                     : null,
                 child: Stack(children: [
                   Positioned.fill(
                       child: Image.memory(_tsBytes!, fit: BoxFit.fill)),
-                  for (var i = 0; i < _tsItems.length; i++) _tsBox(i, W, H),
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: StrokesPainter(_tsStrokes),
+                      size: Size(W, H),
+                    ),
+                  ),
+                  IgnorePointer(
+                    ignoring: _tsBrush || _tsCrop,
+                    child: Stack(children: [
+                      for (var i = 0; i < _tsItems.length; i++)
+                        _tsBox(i, W, H),
+                    ]),
+                  ),
+                  if (_tsCrop) ..._cropOverlay(W, H),
                 ]),
               ),
             );
@@ -1697,7 +1992,7 @@ class _RootPageState extends State<RootPage> {
               style: Theme.of(context).textTheme.bodySmall),
         ],
       ]),
-      _card('4. Export', [
+      _card('6. Export', [
         TextField(
           controller: _tsNameCtrl,
           decoration: const InputDecoration(
@@ -1711,11 +2006,53 @@ class _RootPageState extends State<RootPage> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Custom fonts: loads from URL or file, then works offline. '
-          'Google Fonts need internet the first time per font.',
+          'Brush strokes and styled text are baked in exactly. Custom fonts '
+          'persist and work offline; Google Fonts need internet once.',
           style: TextStyle(fontSize: 12),
         ),
       ]),
+    ];
+  }
+
+  Widget _cropSlider(String label, double v, void Function(double) on) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label inset: ${(v * 100).round()}%'),
+        Slider(
+          value: v,
+          min: 0,
+          max: 0.45,
+          divisions: 45,
+          label: '${(v * 100).round()}%',
+          onChanged: (x) => setState(() => on(x)),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _cropOverlay(double W, double H) {
+    return [
+      Positioned(
+        left: 0, top: 0,
+        width: W * _cropL, height: H,
+        child: Container(color: Colors.black45),
+      ),
+      Positioned(
+        left: W * (1 - _cropR), top: 0,
+        width: W * _cropR, height: H,
+        child: Container(color: Colors.black45),
+      ),
+      Positioned(
+        left: W * _cropL, top: 0,
+        width: W * (1 - _cropL - _cropR), height: H * _cropT,
+        child: Container(color: Colors.black45),
+      ),
+      Positioned(
+        left: W * _cropL, top: H * (1 - _cropB),
+        width: W * (1 - _cropL - _cropR), height: H * _cropB,
+        child: Container(color: Colors.black45),
+      ),
     ];
   }
 

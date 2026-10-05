@@ -1,11 +1,21 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+
+class Stroke {
+  Stroke({required this.pts, this.color = Colors.white, this.widthFrac = 0.02});
+
+  final List<List<double>> pts; // [x, y] as fractions of the image
+  Color color;
+  double widthFrac;
+}
 
 class BoxItem {
   BoxItem({
@@ -32,9 +42,9 @@ class BoxItem {
   });
 
   String text;
-  String font; // preset name or Custom_<name>
+  String font;
   double x, y, w, h;
-  double fs; // fraction of image height
+  double fs;
   Color color;
   bool bold, italic;
   bool outline;
@@ -44,9 +54,21 @@ class BoxItem {
   Color glowColor;
   double glowR;
   double blur;
-  double rot; // degrees
+  double rot;
   bool gradient;
   Color color2;
+}
+
+class StrokesPainter extends CustomPainter {
+  StrokesPainter(this.strokes);
+  final List<Stroke> strokes;
+
+  @override
+  void paint(ui.Canvas canvas, Size size) =>
+      TypesetService.paintStrokes(canvas, strokes, size.width, size.height);
+
+  @override
+  bool shouldRepaint(covariant StrokesPainter old) => old.strokes != strokes;
 }
 
 class TypesetService {
@@ -80,7 +102,6 @@ class TypesetService {
     return s.length > 24 ? s.substring(0, 24) : s;
   }
 
-  /// Registers font bytes under family `Custom_<name>` and saves for next launches.
   static Future<String> registerFontData(Uint8List bytes, String rawName) async {
     final name = _cleanName(rawName);
     final family = 'Custom_$name';
@@ -91,7 +112,6 @@ class TypesetService {
     return family;
   }
 
-  /// Re-registers fonts saved by previous sessions (call when tool opens).
   static Future<void> registerSavedFonts() async {
     try {
       final d = await fontDir();
@@ -115,18 +135,39 @@ class TypesetService {
     if (res.statusCode != 200 || res.bodyBytes.isEmpty) {
       throw Exception('Font download failed (HTTP ${res.statusCode})');
     }
-    final seg = url.split('/').last;
-    return registerFontData(res.bodyBytes, seg);
+    return registerFontData(res.bodyBytes, url.split('/').last);
   }
 
   static Future<String> fontFromFile(String path) async {
     final bytes = await File(path).readAsBytes();
-    final seg = path.split('/').last;
-    return registerFontData(bytes, seg);
+    return registerFontData(bytes, path.split('/').last);
   }
 
-  static Future<Uint8List> render(
-      Uint8List imageBytes, List<BoxItem> items) async {
+  static void paintStrokes(
+      ui.Canvas canvas, List<Stroke> strokes, double w, double h) {
+    for (final s in strokes) {
+      if (s.pts.isEmpty) continue;
+      final paint = ui.Paint()
+        ..color = s.color
+        ..strokeWidth = (s.widthFrac * h).clamp(1.0, 500.0)
+        ..strokeCap = ui.StrokeCap.round
+        ..strokeJoin = ui.StrokeJoin.round
+        ..style = ui.PaintingStyle.stroke;
+      final path = ui.Path();
+      final p0 = s.pts[0];
+      path.moveTo(p0[0] * w, p0[1] * h);
+      if (s.pts.length == 1) {
+        path.lineTo(p0[0] * w + 0.5, p0[1] * h + 0.5);
+      }
+      for (var i = 1; i < s.pts.length; i++) {
+        path.lineTo(s.pts[i][0] * w, s.pts[i][1] * h);
+      }
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  static Future<Uint8List> render(Uint8List imageBytes,
+      List<BoxItem> items, List<Stroke> strokes) async {
     final codec = await ui.instantiateImageCodec(imageBytes);
     final frame = await codec.getNextFrame();
     final img = frame.image;
@@ -134,14 +175,10 @@ class TypesetService {
     final rec = ui.PictureRecorder();
     final canvas = ui.Canvas(rec);
     canvas.drawImage(img, ui.Offset.zero, ui.Paint());
-
+    paintStrokes(canvas, strokes, img.width.toDouble(), img.height.toDouble());
     for (final it in items) {
-      final rect = ui.Rect.fromLTWH(
-        it.x * img.width,
-        it.y * img.height,
-        it.w * img.width,
-        it.h * img.height,
-      );
+      final rect = ui.Rect.fromLTWH(it.x * img.width, it.y * img.height,
+          it.w * img.width, it.h * img.height);
       _paintBox(canvas, it, rect, img.height.toDouble());
     }
 
@@ -150,6 +187,42 @@ class TypesetService {
     final data = await out.toByteData(format: ui.ImageByteFormat.png);
     img.dispose();
     return data!.buffer.asUint8List();
+  }
+
+  /// Bakes only brush strokes over the image (Clean tool's save step).
+  static Future<Uint8List> bakeStrokes(
+      Uint8List imageBytes, List<Stroke> strokes) async {
+    final codec = await ui.instantiateImageCodec(imageBytes);
+    final frame = await codec.getNextFrame();
+    final img = frame.image;
+    final rec = ui.PictureRecorder();
+    final canvas = ui.Canvas(rec);
+    canvas.drawImage(img, ui.Offset.zero, ui.Paint());
+    paintStrokes(canvas, strokes, img.width.toDouble(), img.height.toDouble());
+    final pic = rec.endRecording();
+    final out = await pic.toImage(img.width, img.height);
+    final data = await out.toByteData(format: ui.ImageByteFormat.png);
+    img.dispose();
+    return data!.buffer.asUint8List();
+  }
+
+  static Uint8List _cropIsolate(Map<String, dynamic> a) {
+    final im = img.decodeImage(a['bytes'] as Uint8List);
+    if (im == null) throw Exception('Bad image');
+    final r = (a['rect'] as List).cast<double>();
+    final x = (im.width * r[0]).round();
+    final y = (im.height * r[1]).round();
+    final w = ((im.width * r[2]).round() - x).clamp(1, im.width);
+    final h = ((im.height * r[3]).round() - y).clamp(1, im.height);
+    final out = img.copyCrop(im, x: x, y: y, width: w, height: h);
+    return Uint8List.fromList(img.encodePng(out));
+  }
+
+  static Future<Uint8List> cropImage(Uint8List bytes, Rect frac) {
+    return compute(_cropIsolate, {
+      'bytes': bytes,
+      'rect': [frac.left, frac.top, frac.right, frac.bottom],
+    });
   }
 
   static void _paintBox(

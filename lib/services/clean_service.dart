@@ -3,10 +3,10 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show compute;
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Flood-fill + dilate + fill, on raw RGBA bytes. Runs in an isolate.
 Uint8List _clean(Map<String, dynamic> a) {
   final rgba = (a['rgba'] as Uint8List);
   final w = a['w'] as int;
@@ -100,6 +100,55 @@ Uint8List _clean(Map<String, dynamic> a) {
   return rgba;
 }
 
+Uint8List _fillBoxes(Map<String, dynamic> a) {
+  final rgba = a['rgba'] as Uint8List;
+  final w = a['w'] as int;
+  final h = a['h'] as int;
+  final boxes = (a['boxes'] as List)
+      .map((e) => (e as List).cast<int>())
+      .toList();
+
+  for (final b in boxes) {
+    final x0 = (b[0] - 6).clamp(0, w - 1);
+    final y0 = (b[1] - 6).clamp(0, h - 1);
+    final x1 = (b[0] + b[2] + 6).clamp(1, w);
+    final y1 = (b[1] + b[3] + 6).clamp(1, h);
+
+    const pad = 10;
+    var ar = 0, ag = 0, ab = 0, n = 0;
+    void sample(int x, int y) {
+      if (x < 0 || y < 0 || x >= w || y >= h) return;
+      final o = (y * w + x) * 4;
+      ar += rgba[o];
+      ag += rgba[o + 1];
+      ab += rgba[o + 2];
+      n++;
+    }
+
+    for (var x = x0 - pad; x <= x1 + pad; x += 3) {
+      sample(x, y0 - pad);
+      sample(x, y1 + pad);
+    }
+    for (var y = y0 - pad; y <= y1 + pad; y += 3) {
+      sample(x0 - pad, y);
+      sample(x1 + pad, y);
+    }
+    if (n == 0) continue;
+    final r = ar ~/ n, g = ag ~/ n, bl = ab ~/ n;
+
+    for (var y = y0; y < y1; y++) {
+      for (var x = x0; x < x1; x++) {
+        final o = (y * w + x) * 4;
+        rgba[o] = r;
+        rgba[o + 1] = g;
+        rgba[o + 2] = bl;
+        rgba[o + 3] = 255;
+      }
+    }
+  }
+  return rgba;
+}
+
 class CleanService {
   static Future<List<int>> dims(Uint8List bytes) async {
     final codec = await ui.instantiateImageCodec(bytes);
@@ -146,9 +195,67 @@ class CleanService {
     return out!.buffer.asUint8List();
   }
 
-  /// AI clean: sends the whole panel to Gemini's image model and gets back
-  /// a text-free version. Needs a key. If the model name 404s, put the
-  /// image model name the error suggests into _imgModel.
+  /// OFFLINE auto-clean: on-device OCR finds text boxes, fills each with
+  /// the color sampled just outside it. Free, no key, no internet.
+  static Future<Uint8List> autoCleanOffline(String path, Uint8List bytes) async {
+    final input = InputImage.fromFilePath(path);
+    final boxes = <List<int>>[];
+    for (final script in [
+      TextRecognitionScript.latin,
+      TextRecognitionScript.korean,
+    ]) {
+      final rec = TextRecognizer(script: script);
+      try {
+        final r = await rec.processImage(input);
+        for (final b in r.blocks) {
+          for (final l in b.lines) {
+            final bb = l.boundingBox;
+            if (bb.width < 3 || bb.height < 3) continue;
+            boxes.add([
+              bb.left.round(),
+              bb.top.round(),
+              bb.width.round(),
+              bb.height.round()
+            ]);
+          }
+        }
+      } catch (_) {
+        // that script's model not ready - skip it
+      } finally {
+        rec.close();
+      }
+    }
+    if (boxes.isEmpty) {
+      throw Exception('Offline OCR found no text (or its model is still '
+          'downloading - try again once, online)');
+    }
+
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final img = frame.image;
+    final w = img.width, h = img.height;
+    final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final rgba = data!.buffer.asUint8List();
+    img.dispose();
+
+    final filled = await compute(
+        _fillBoxes, {'rgba': rgba, 'w': w, 'h': h, 'boxes': boxes});
+
+    final buf = await ui.ImmutableBuffer.fromUint8List(filled);
+    final desc = ui.ImageDescriptor.raw(
+      buf,
+      width: w,
+      height: h,
+      pixelFormat: ui.PixelFormat.rgba8888,
+    );
+    final codec2 = await desc.instantiateCodec();
+    final f2 = await codec2.getNextFrame();
+    final out = await f2.image.toByteData(format: ui.ImageByteFormat.png);
+    f2.image.dispose();
+    return out!.buffer.asUint8List();
+  }
+
+  /// AI auto-clean: whole panel to Gemini's image model, text-free back.
   static const _imgModel = 'gemini-3.8-flash-image';
 
   static Future<Uint8List> aiClean(Uint8List bytes,
@@ -197,11 +304,13 @@ class CleanService {
     final parts = cands[0]['content']['parts'] as List;
     for (final p in parts) {
       final m = p as Map<String, dynamic>;
-      final inline = (m['inlineData'] ?? m['inline_data']) as Map<String, dynamic>?;
+      final inline =
+          (m['inlineData'] ?? m['inline_data']) as Map<String, dynamic>?;
       if (inline != null && inline['data'] != null) {
         return base64Decode(inline['data'] as String);
       }
     }
-    throw Exception('AI clean returned no image: ${res.body.substring(0, res.body.length.clamp(0, 300))}');
+    throw Exception(
+        'AI clean returned no image: ${res.body.substring(0, res.body.length.clamp(0, 300))}');
   }
 }

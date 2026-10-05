@@ -175,6 +175,113 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  void _toast(String m) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+  }
+
+  Future<void> _forgotFlow() async {
+    final emailC = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset password - step 1'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('We will email you a 6-digit code.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: emailC,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                  labelText: 'Email', border: OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Send code')),
+        ],
+      ),
+    );
+    if (ok != true || emailC.text.trim().isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      await _sb.auth.resetPasswordForEmail(emailC.text.trim());
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _err = e.toString().replaceFirst('Exception: ', '');
+        });
+      }
+      return;
+    }
+    if (mounted) setState(() => _busy = false);
+    if (!mounted) return;
+
+    final codeC = TextEditingController();
+    final passC = TextEditingController();
+    final ok2 = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset password - step 2'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+                'Type the 6-digit code from the email and your new password.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: codeC,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                  labelText: 'Code', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passC,
+              obscureText: true,
+              decoration: const InputDecoration(
+                  labelText: 'New password', border: OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Change password')),
+        ],
+      ),
+    );
+    if (ok2 != true) return;
+    setState(() => _busy = true);
+    try {
+      await _sb.auth.verifyOTP(
+        email: emailC.text.trim(),
+        token: codeC.text.trim(),
+        type: OtpType.recovery,
+      );
+      await _sb.auth.updateUser(UserAttributes(password: passC.text));
+      await _sb.auth.signOut();
+      _toast('Password changed - log in with the new one');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _err = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -213,6 +320,10 @@ class _LoginPageState extends State<LoginPage> {
             child: Text(_busy ? '...' : (_mode ? 'Create account' : 'Log in')),
           ),
           const SizedBox(height: 8),
+          TextButton(
+            onPressed: _busy ? null : _forgotFlow,
+            child: const Text('Forgot password?'),
+          ),
           TextButton(
             onPressed: _busy ? null : () => setState(() => _mode = !_mode),
             child: Text(_mode
