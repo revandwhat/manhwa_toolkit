@@ -274,7 +274,8 @@ class GameService {
         .from('cards')
         .select()
         .eq('owner', _uid())
-        .order('created_at');
+        .order('star', ascending: false)
+        .order('created_at', ascending: false);
     return rows.map((e) => Hero.fromRow(e, art: art)).toList();
   }
 
@@ -344,8 +345,15 @@ class GameService {
         params: {'target_username': username, 'amount': amount});
   }
 
-  Future<void> adminAddHero(int star, String name) async {
-    await _sb.rpc('add_hero', params: {'star': star, 'name': name.trim()});
+  Future<void> adminAddHero(int star, String name,
+      {String? skillName, String? skillKind, double? skillValue}) async {
+    await _sb.rpc('add_hero', params: {
+      'star': star,
+      'name': name.trim(),
+      'sname': skillName,
+      'skind': skillKind,
+      'svalue': skillValue,
+    });
   }
 
   Future<void> adminRemoveHero(String name) async {

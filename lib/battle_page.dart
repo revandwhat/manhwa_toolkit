@@ -219,7 +219,7 @@ class _BattlePageState extends State<BattlePage> {
                     child: (isHero && f.picture != null)
                         ? Image.network(
                             f.picture!,
-                            fit: BoxFit.cover,
+                            fit: BoxFit.contain,
                             errorBuilder: (_, _, _) =>
                                 _fallbackAvatar(f, color),
                           )

@@ -54,6 +54,9 @@ class _GamePageState extends State<GamePage>
   final _rmName = TextEditingController();
   final _artName = TextEditingController();
   final _artUrl = TextEditingController();
+  final _skName = TextEditingController();
+  final _skVal = TextEditingController();
+  String _skKindA = 'damage';
 
   static const _starColor = {
     1: Colors.grey,
@@ -77,6 +80,14 @@ class _GamePageState extends State<GamePage>
   void dispose() {
     _tabs.dispose();
     _floorCtrl.dispose();
+    _goldUser.dispose();
+    _goldAmt.dispose();
+    _hName.dispose();
+    _rmName.dispose();
+    _artName.dispose();
+    _artUrl.dispose();
+    _skName.dispose();
+    _skVal.dispose();
     super.dispose();
   }
 
@@ -204,7 +215,7 @@ class _GamePageState extends State<GamePage>
                         Expanded(
                           child: r.hero.picture != null
                               ? Image.network(r.hero.picture!,
-                                  fit: BoxFit.cover,
+                                  fit: BoxFit.contain,
                                   width: double.infinity,
                                   errorBuilder: (_, _, _) => Center(
                                       child: Text('★' * r.hero.star,
@@ -264,7 +275,7 @@ class _GamePageState extends State<GamePage>
                   child: Image.network(h.picture!,
                       width: 56,
                       height: 56,
-                      fit: BoxFit.cover,
+                      fit: BoxFit.contain,
                       errorBuilder: (_, _, _) => const SizedBox(width: 56)),
                 ),
                 const SizedBox(width: 12),
@@ -532,10 +543,22 @@ class _GamePageState extends State<GamePage>
           GestureDetector(
             onTap: _busy ? null : _changeAvatar,
             child: Stack(children: [
-              CircleAvatar(
-                radius: 32,
-                backgroundImage:
-                    _avatar != null ? NetworkImage(_avatar!) : null,
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                  image: _avatar != null
+                      ? DecorationImage(
+                          image: NetworkImage(_avatar!),
+                          fit: BoxFit.contain,
+                        )
+                      : null,
+                ),
+                alignment: Alignment.center,
                 child: _avatar == null
                     ? const Icon(Icons.person, size: 32)
                     : null,
@@ -671,7 +694,7 @@ class _GamePageState extends State<GamePage>
                     Expanded(
                       child: h.picture != null
                           ? Image.network(h.picture!,
-                              fit: BoxFit.cover,
+                              fit: BoxFit.contain,
                               width: double.infinity,
                               errorBuilder: (_, _, _) => _starHeader(h, c))
                           : _starHeader(h, c),
@@ -779,7 +802,7 @@ class _GamePageState extends State<GamePage>
                                 child: Image.network(h.picture!,
                                     width: 40,
                                     height: 40,
-                                    fit: BoxFit.cover,
+                                    fit: BoxFit.contain,
                                     errorBuilder: (_, _, _) =>
                                         Text('★${h.star}',
                                             style: TextStyle(
@@ -995,8 +1018,21 @@ class _GamePageState extends State<GamePage>
           OutlinedButton(
             onPressed: _busy
                 ? null
-                : () => _run(() => _game.adminAddHero(_hStarA, _hName.text),
-                    'Hero added to pool'),
+                : () {
+                    final sn = _skName.text.trim();
+                    final sv = double.tryParse(_skVal.text.trim());
+                    _run(
+                      () => _game.adminAddHero(
+                        _hStarA,
+                        _hName.text,
+                        skillName: sn.isEmpty ? null : sn,
+                        skillKind: sn.isEmpty ? null : _skKindA,
+                        skillValue:
+                            (sn.isEmpty || sv == null) ? null : sv / 100,
+                      ),
+                      'Hero added to pool',
+                    );
+                  },
             child: const Text('Add hero'),
           ),
           OutlinedButton(
@@ -1013,6 +1049,45 @@ class _GamePageState extends State<GamePage>
             decoration: const InputDecoration(
                 labelText: 'Hero name (for remove)',
                 border: OutlineInputBorder())),
+        const Divider(height: 24),
+        Text('Custom skill for new hero (optional)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _skName,
+            decoration: const InputDecoration(
+                labelText: 'Skill name (empty = random skills)',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              initialValue: _skKindA,
+              decoration: const InputDecoration(
+                  labelText: 'Effect', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'damage', child: Text('Berserk: +dmg%')),
+                DropdownMenuItem(value: 'crit', child: Text('Keen Eye: crit%')),
+                DropdownMenuItem(
+                    value: 'lifesteal', child: Text('Vampiric: heal%')),
+                DropdownMenuItem(
+                    value: 'guard', child: Text('Bulwark: -dmg taken%')),
+                DropdownMenuItem(
+                    value: 'first', child: Text('Ambush: rounds 1-3%')),
+              ],
+              onChanged: (v) => setState(() => _skKindA = v ?? 'damage'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+                controller: _skVal,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'Value % (e.g. 30)',
+                    border: OutlineInputBorder())),
+          ),
+        ]),
         const Divider(height: 24),
         Text('Set hero art (picture URL)',
             style: Theme.of(context).textTheme.labelLarge),
