@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
@@ -52,6 +52,8 @@ class Hero {
     required this.skill,
     this.locked = false,
     this.picture,
+    this.exp = 0,
+    this.bonus = 0,
   });
 
   final String id;
@@ -61,11 +63,19 @@ class Hero {
   final Skill skill;
   final bool locked;
   final String? picture;
+  final int exp;
+  final int bonus;
 
   static const maxLevel = 30;
   static const _basePower = {1: 40, 2: 80, 3: 150, 4: 260, 5: 450};
+  static const fodderGain = {1: 1, 2: 2, 3: 4, 4: 8, 5: 15};
 
-  int get power => (_basePower[star]! * (1 + 0.07 * (level - 1))).round();
+  int get power =>
+      (_basePower[star]! * (1 + 0.07 * (level - 1))).round() + bonus * 2;
+  int get atk => power;
+  int get hpStat => power * 6;
+  int get defStat => (power * 0.5).round();
+  int get expNeed => level * 40;
   int get sellValue => star * 20 + (level - 1) * 8;
 
   factory Hero.fromRow(Map<String, dynamic> j, {Map<String, String>? art}) =>
@@ -81,6 +91,8 @@ class Hero {
         ),
         locked: (j['locked'] as bool?) ?? false,
         picture: art?[j['name'] as String],
+        exp: (j['exp'] as num?)?.toInt() ?? 0,
+        bonus: (j['bonus'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -96,6 +108,7 @@ class FighterInfo {
     required this.power,
     this.star = 0,
     this.picture,
+    this.boss = false,
   });
 
   final String id;
@@ -103,6 +116,7 @@ class FighterInfo {
   final int power;
   final int star;
   final String? picture;
+  final bool boss;
 }
 
 class HitEvent {
@@ -170,7 +184,7 @@ class GameService {
 
   static (int, int) waveInfo(int floor) {
     final count = floor >= 15 ? 8 : (floor >= 10 ? 7 : (floor >= 5 ? 6 : 5));
-    final power = 8 + floor * 5;
+    final power = 10 + floor * 8;
     return (count, power);
   }
 
@@ -202,8 +216,9 @@ class GameService {
             'Synergy: ${e.value}x ${Skill.label(e.key)} -> +20% effect each');
       }
     }
-    final guard =
-        team.where((h) => h.skill.kind == 'guard').fold(0.0, (a, h) => a + h.skill.value);
+    final guard = team
+        .where((h) => h.skill.kind == 'guard')
+        .fold(0.0, (a, h) => a + h.skill.value);
     if (guard > 0) {
       final pct = (min(guard, 0.35) * 100).round();
       notes.add('Bulwark stack: team takes -$pct% damage');
@@ -223,9 +238,7 @@ class GameService {
     return u.id;
   }
 
-  void _bust() {
-    _pcache = null;
-  }
+  void _bust() => _pcache = null;
 
   Future<Map<String, dynamic>> _profile() async {
     if (_pcache != null &&
@@ -242,19 +255,16 @@ class GameService {
   Future<int> coins() async => ((await _profile())['coins'] ?? 0) as int;
   Future<int> floorCleared() async =>
       ((await _profile())['highest_floor'] ?? 0) as int;
-
-  Future<String> username() async =>
-      ((await _profile())['username'] ?? 'player') as String;
-
-  Future<String?> avatarUrl() async =>
-      (await _profile())['avatar_url'] as String?;
   Future<int> streakDays() async =>
       ((await _profile())['streak'] ?? 0) as int;
   Future<bool> isAdmin() async =>
       ((await _profile())['is_admin'] ?? false) as bool;
-
   Future<bool> claimedToday() async =>
       ((await _profile())['last_claim'] ?? '') == _today();
+  Future<String> username() async =>
+      ((await _profile())['username'] ?? 'player') as String;
+  Future<String?> avatarUrl() async =>
+      (await _profile())['avatar_url'] as String?;
 
   static String _today() {
     final d = DateTime.now();
@@ -264,7 +274,8 @@ class GameService {
   Future<Map<String, String>> artMap() async {
     final rows = await _sb.from('hero_art').select();
     return {
-      for (final r in rows) r['name'] as String: r['picture'] as String,
+      for (final r in rows)
+        r['name'] as String: r['picture'] as String,
     };
   }
 
@@ -275,6 +286,7 @@ class GameService {
         .select()
         .eq('owner', _uid())
         .order('star', ascending: false)
+        .order('level', ascending: false)
         .order('created_at', ascending: false);
     return rows.map((e) => Hero.fromRow(e, art: art)).toList();
   }
@@ -290,8 +302,7 @@ class GameService {
     final art = await artMap();
     _bust();
     return rows
-        .map((e) => PullResult(
-            hero: Hero.fromRow(e, art: art)))
+        .map((e) => PullResult(hero: Hero.fromRow(e, art: art)))
         .toList();
   }
 
@@ -322,6 +333,20 @@ class GameService {
     if (index >= roster.length) throw Exception('Card not found');
     await _sb.rpc('gift_card',
         params: {'card_id': roster[index].id, 'to_username': username});
+  }
+
+  Future<(int, int)> synthesize(int targetIdx, List<int> fodderIdx) async {
+    final roster = await this.roster();
+    if (targetIdx >= roster.length) throw Exception('Card not found');
+    final ids = [for (final i in fodderIdx) roster[i].id];
+    final r = await _sb.rpc('synthesize',
+        params: {'target_id': roster[targetIdx].id, 'fodder_ids': ids});
+    _bust();
+    final row = (r as List).first as Map<String, dynamic>;
+    return (
+      (row['new_bonus'] as num).toInt(),
+      (row['coins_gained'] as num).toInt(),
+    );
   }
 
   Future<void> signOut() => _sb.auth.signOut();
@@ -398,8 +423,9 @@ class GameService {
       if (t.length == 5) m += 0.10;
       boost[h.id] = m;
     }
-    final guard =
-        t.where((h) => h.skill.kind == 'guard').fold(0.0, (a, h) => a + h.skill.value);
+    final guard = t
+        .where((h) => h.skill.kind == 'guard')
+        .fold(0.0, (a, h) => a + h.skill.value);
     final dmgTakenMul = 1.0 - min(guard, 0.35);
 
     final hF = <FighterInfo>[];
@@ -410,11 +436,11 @@ class GameService {
       hF.add(FighterInfo(
           id: 'H$i',
           name: t[i].name,
-          power: t[i].power,
+          power: t[i].atk,
           star: t[i].star,
           picture: t[i].picture));
-      hMax.add(t[i].power * 6);
-      hHp.add(t[i].power * 6);
+      hMax.add(t[i].hpStat);
+      hHp.add(t[i].hpStat);
       hAlive.add(true);
     }
     final eF = <FighterInfo>[];
@@ -422,10 +448,15 @@ class GameService {
     final eHp = <int>[];
     final eAlive = <bool>[];
     for (var i = 0; i < count; i++) {
+      final isBoss = f % 5 == 0 && i == count - 1;
+      final pw = isBoss ? (ePower * 1.6).round() : ePower;
       eF.add(FighterInfo(
-          id: 'E$i', name: _enemyAt(f, i, count), power: ePower));
-      eMax.add(ePower * 6);
-      eHp.add(ePower * 6);
+          id: 'E$i',
+          name: _enemyAt(f, i, count),
+          power: pw,
+          boss: isBoss));
+      eMax.add(pw * 6);
+      eHp.add(pw * 6);
       eAlive.add(true);
     }
 
@@ -479,10 +510,12 @@ class GameService {
 
       for (var j = 0; j < eF.length; j++) {
         if (!eAlive[j] || !hAlive.any((x) => x)) continue;
-        final ed = ePower * (0.85 + _rng.nextDouble() * 0.3) * dmgTakenMul;
+        final ef = eF[j].power * (0.85 + _rng.nextDouble() * 0.3) * dmgTakenMul;
         final alive = [for (var i = 0; i < hAlive.length; i++) if (hAlive[i]) i];
         final ti = alive[_rng.nextInt(alive.length)];
-        final d = ed.round();
+        final raw = ef.round();
+        final eff = max((raw * 0.25).round(), raw - (t[ti].defStat * 0.12).round());
+        final d = eff;
         hHp[ti] -= d;
         final ko = hHp[ti] <= 0;
         if (ko) hAlive[ti] = false;
@@ -505,7 +538,11 @@ class GameService {
     }
 
     final win = !eAlive.any((x) => x);
-    final coins = await _sb.rpc('battle_result', params: {'f': f, 'won': win});
+    final coins = await _sb.rpc('battle_result', params: {
+      'f': f,
+      'won': win,
+      'hero_ids': [for (final h in t) h.id],
+    });
     _bust();
     return BattleResult(
       win: win,

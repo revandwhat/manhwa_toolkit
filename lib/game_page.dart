@@ -275,7 +275,7 @@ class _GamePageState extends State<GamePage>
                   child: Image.network(h.picture!,
                       width: 56,
                       height: 56,
-                      fit: BoxFit.contain,
+                      fit: BoxFit.cover,
                       errorBuilder: (_, _, _) => const SizedBox(width: 56)),
                 ),
                 const SizedBox(width: 12),
@@ -297,14 +297,37 @@ class _GamePageState extends State<GamePage>
               ),
             ]),
             const SizedBox(height: 12),
-            Text('Level ${h.level} / ${Hero.maxLevel} - Power ${h.power}'),
+            Text(
+                'ATK ${h.atk}   HP ${h.hpStat}   DEF ${h.defStat}',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            Text('Level ${h.level} / ${Hero.maxLevel}'
+                '${h.bonus > 0 ? " • synthesized +${h.bonus}" : ""}'),
+            const SizedBox(height: 4),
+            Row(children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: (h.exp / h.expNeed).clamp(0.0, 1.0),
+                    minHeight: 6,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text('EXP ${h.exp}/${h.expNeed}',
+                  style: const TextStyle(fontSize: 11)),
+            ]),
             const SizedBox(height: 8),
             Text('Skill: ${h.skill.name}',
                 style: const TextStyle(fontWeight: FontWeight.w600)),
             Text(h.skill.desc, style: const TextStyle(fontSize: 13)),
             const SizedBox(height: 8),
-            Text('Sell value: ${h.sellValue} coins',
-                style: const TextStyle(fontSize: 13)),
+            Text(
+                'Sell value: ${h.sellValue} coins - wins give '
+                '${20}+ EXP for free level-ups',
+                style: const TextStyle(fontSize: 12)),
             const SizedBox(height: 16),
             Wrap(
               spacing: 8,
@@ -324,6 +347,14 @@ class _GamePageState extends State<GamePage>
                   icon: const Icon(Icons.trending_up),
                   label:
                       Text('Level up (${GameService.levelCost(h.level)})'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    _openSynthesize(i);
+                  },
+                  icon: const Icon(Icons.science),
+                  label: const Text('Synthesize'),
                 ),
                 OutlinedButton.icon(
                   onPressed: () async {
@@ -412,6 +443,133 @@ class _GamePageState extends State<GamePage>
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _openSynthesize(int targetIdx) async {
+    final target = _roster[targetIdx];
+    final selected = <int>[];
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, sb) {
+            final fodder = [
+              for (var i = 0; i < _roster.length; i++)
+                if (i != targetIdx && !_roster[i].locked) i
+            ];
+            var gain = 0;
+            for (final i in selected) {
+              gain += Hero.fodderGain[_roster[i].star] ?? 0;
+            }
+            var refund = 0;
+            for (final i in selected) {
+              refund += _roster[i].star * 5;
+            }
+            return SizedBox(
+              height: MediaQuery.of(ctx).size.height * 0.85,
+              child: Column(children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(children: [
+                    Text('Feed heroes to ${target.name}',
+                        style: Theme.of(ctx)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text(
+                        '${selected.length}/10 picked - +$gain bonus'
+                        '${refund > 0 ? ", +$refund coins back" : ""}',
+                        style: Theme.of(ctx).textTheme.bodySmall),
+                  ]),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: fodder.length,
+                    itemBuilder: (ctx, k) {
+                      final i = fodder[k];
+                      final h = _roster[i];
+                      final sel = selected.contains(i);
+                      return ListTile(
+                        dense: true,
+                        leading: Text('★${h.star}',
+                            style: TextStyle(
+                                color: _starColor[h.star]!,
+                                fontWeight: FontWeight.bold)),
+                        title: Text(h.name,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                            'Lv ${h.level} - +${Hero.fodderGain[h.star]} bonus',
+                            style: const TextStyle(fontSize: 11)),
+                        trailing: Icon(
+                            sel
+                                ? Icons.check_circle
+                                : Icons.radio_button_unchecked,
+                            color: sel ? Colors.teal : null),
+                        onTap: () {
+                          sb(() {
+                            if (sel) {
+                              selected.remove(i);
+                            } else if (selected.length < 10) {
+                              selected.add(i);
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content:
+                                          Text('Max 10 fodder at once')));
+                            }
+                          });
+                        },
+                      );
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: selected.isEmpty
+                            ? null
+                            : () async {
+                                Navigator.pop(ctx);
+                                setState(() => _busy = true);
+                                try {
+                                  final (nb, cg) = await _game.synthesize(
+                                      targetIdx, selected);
+                                  _snack(
+                                      'Synthesized! +$nb bonus, +$cg coins');
+                                } catch (e) {
+                                  _snack(e
+                                      .toString()
+                                      .replaceFirst('Exception: ', ''));
+                                } finally {
+                                  if (mounted) {
+                                    setState(() => _busy = false);
+                                  }
+                                }
+                                _refresh();
+                              },
+                        child: const Text('Synthesize'),
+                      ),
+                    ),
+                  ]),
+                ),
+              ]),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -657,16 +815,17 @@ class _GamePageState extends State<GamePage>
       Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
         child: Column(children: [
-          _searchField('Search heroes...',
-              (v) => setState(() {
-                    _hSearch = v;
-                    _hPage = 1;
-                  })),
+          _searchField('Search heroes...', (v) {
+            _hSearch = v;
+            _hPage = 1;
+            setState(() {});
+          }),
           const SizedBox(height: 8),
-          _starChips(_hStar, (s) => setState(() {
-                _hStar = s;
-                _hPage = 1;
-              })),
+          _starChips(_hStar, (s) {
+            _hStar = s;
+            _hPage = 1;
+            setState(() {});
+          }),
         ]),
       ),
       Expanded(
@@ -674,7 +833,7 @@ class _GamePageState extends State<GamePage>
           padding: const EdgeInsets.all(16),
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 3,
-            childAspectRatio: 0.62,
+            childAspectRatio: 0.58,
           ),
           itemCount: shown.length,
           itemBuilder: (ctx, i) {
@@ -682,39 +841,83 @@ class _GamePageState extends State<GamePage>
             final c = _starColor[h.star]!;
             return InkWell(
               onTap: () => _heroSheet(_roster.indexOf(h)),
-              child: Card(
-                color: c.withValues(alpha: 0.12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  side: BorderSide(color: c, width: 1.5),
-                ),
+              child: Container(
+                margin: const EdgeInsets.all(2),
                 clipBehavior: Clip.antiAlias,
-                child: Column(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: c, width: 1.5),
+                ),
+                child: Stack(
+                  fit: StackFit.expand,
                   children: [
-                    Expanded(
-                      child: h.picture != null
-                          ? Image.network(h.picture!,
-                              fit: BoxFit.contain,
-                              width: double.infinity,
-                              errorBuilder: (_, _, _) => _starHeader(h, c))
-                          : _starHeader(h, c),
+                    if (h.picture != null)
+                      Image.network(h.picture!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => _starHeader(h, c))
+                    else
+                      _starHeader(h, c),
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withValues(alpha: 0.8),
+                          ],
+                        ),
+                      ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.all(4),
-                      child: Column(
-                        children: [
-                          Text(h.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600)),
-                          Text('Lv ${h.level} • ${h.power} pw',
-                              style: const TextStyle(fontSize: 9)),
-                          if (h.locked)
-                            const Icon(Icons.lock,
-                                size: 11, color: Colors.grey),
-                        ],
+                    if (h.locked)
+                      const Positioned(
+                        top: 4,
+                        right: 4,
+                        child: Icon(Icons.lock,
+                            size: 14, color: Colors.white),
+                      ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('★' * h.star,
+                                style: TextStyle(
+                                    color: c,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    shadows: [
+                                      Shadow(blurRadius: 6, color: c),
+                                    ])),
+                            Text(h.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    shadows: [
+                                      Shadow(
+                                          blurRadius: 6,
+                                          color: Colors.black),
+                                    ])),
+                            Text(
+                                'Lv ${h.level} • ${h.power} pw'
+                                '${h.bonus > 0 ? " • +${h.bonus}" : ""}',
+                                style: const TextStyle(
+                                    fontSize: 9,
+                                    color: Colors.white,
+                                    shadows: [
+                                      Shadow(
+                                          blurRadius: 4,
+                                          color: Colors.black),
+                                    ])),
+                          ],
+                        ),
                       ),
                     ),
                   ],

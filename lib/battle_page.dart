@@ -193,133 +193,181 @@ class _BattlePageState extends State<BattlePage> {
 
   Widget _card(FighterInfo f, _Fv v, Color color, bool isHero) {
     final frac = v.max <= 0 ? 0.0 : (v.hp / v.max).clamp(0.0, 1.0).toDouble();
+    final glow = isHero ? Colors.cyanAccent : Colors.redAccent;
     return Opacity(
-      opacity: v.alive ? 1.0 : 0.35,
+      opacity: v.alive ? 1.0 : 0.4,
       child: Transform.translate(
-        offset: Offset(v.shake ? 6 : 0, isHero ? (v.lunge ? -18.0 : 0) : (v.lunge ? 18.0 : 0)),
+        offset: Offset(
+            v.shake ? 6 : 0, isHero ? (v.lunge ? -18.0 : 0) : (v.lunge ? 18.0 : 0)),
         child: Container(
-          width: 92,
+          width: 96,
+          height: 128,
           margin: const EdgeInsets.all(4),
-          padding: const EdgeInsets.all(5),
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.06),
             border: Border.all(
-                color: v.alive ? color.withValues(alpha: 0.5) : Colors.white12),
+                color: v.alive
+                    ? (f.boss ? Colors.deepOrange : color.withValues(alpha: 0.6))
+                    : Colors.white12,
+                width: f.boss ? 2 : 1),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          child: Stack(
+            fit: StackFit.expand,
             children: [
-              Stack(children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: SizedBox(
-                    width: 80,
-                    height: 56,
-                    child: (isHero && f.picture != null)
-                        ? Image.network(
-                            f.picture!,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, _, _) =>
-                                _fallbackAvatar(f, color),
-                          )
-                        : _fallbackAvatar(f, color),
+              // background: art or fallback color
+              if (isHero && f.picture != null)
+                Image.network(f.picture!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => _bg(color))
+              else
+                _bg(color),
+              // scrim for readability
+              Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.75),
+                    ],
                   ),
-                ),
-                if (!v.alive)
-                  const Positioned.fill(
-                    child: Center(
-                      child: Text('KO',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              shadows: [
-                                Shadow(blurRadius: 6, color: Colors.black)
-                              ])),
-                    ),
-                  ),
-              ]),
-              const SizedBox(height: 3),
-              Text(f.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 9)),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(3),
-                child: LinearProgressIndicator(
-                  value: frac,
-                  minHeight: 5,
-                  backgroundColor: Colors.white12,
-                  valueColor: AlwaysStoppedAnimation(
-                      HSVColor.fromColor(color)
-                          .withSaturation(1)
-                          .withValue(0.3 + 0.7 * frac)
-                          .toColor()),
                 ),
               ),
-              Stack(children: [
-                Text('${v.hp}',
-                    style: const TextStyle(color: Colors.white70, fontSize: 9)),
-                if (v.pop != null)
-                  Positioned.fill(
-                    child: TweenAnimationBuilder<double>(
-                      key: ValueKey('p${v.popV}'),
-                      tween: Tween(begin: 0, end: 1),
-                      duration: const Duration(milliseconds: 700),
-                      builder: (context, t, _) => Opacity(
-                        opacity: (1 - t).clamp(0.0, 1.0),
-                        child: Transform.translate(
-                          offset: Offset(0, -14 * t),
-                          child: Text(
-                            v.pop!,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 15,
+              if (f.boss)
+                const Positioned(
+                  top: 2,
+                  left: 0,
+                  right: 0,
+                  child: Text('BOSS',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: Colors.deepOrangeAccent,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold)),
+                ),
+              if (!v.alive)
+                const Center(
+                  child: Text('KO',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          shadows: [Shadow(blurRadius: 6, color: Colors.black)])),
+                ),
+              // glowing info overlay
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(f.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
                               fontWeight: FontWeight.bold,
-                              color: (v.pop ?? '').startsWith('CRIT')
-                                  ? Colors.orange
-                                  : ((v.pop ?? '') == 'KO!'
-                                      ? Colors.white
-                                      : (isHero
-                                          ? Colors.redAccent
-                                          : Colors.white)),
-                              shadows: const [
-                                Shadow(blurRadius: 6, color: Colors.black)
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                if (v.healPop != null)
-                  Positioned.fill(
-                    child: TweenAnimationBuilder<double>(
-                      key: ValueKey('h${v.healV}'),
-                      tween: Tween(begin: 0, end: 1),
-                      duration: const Duration(milliseconds: 700),
-                      builder: (context, t, _) => Opacity(
-                        opacity: (1 - t).clamp(0.0, 1.0),
-                        child: Transform.translate(
-                          offset: Offset(0, -14 * t),
-                          child: Text(
-                            v.healPop!,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.greenAccent,
                               shadows: [
-                                Shadow(blurRadius: 6, color: Colors.black)
-                              ],
-                            ),
-                          ),
+                                Shadow(color: glow, blurRadius: 6),
+                                const Shadow(
+                                    color: Colors.black, blurRadius: 3),
+                              ])),
+                      const SizedBox(height: 2),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: LinearProgressIndicator(
+                          value: frac,
+                          minHeight: 5,
+                          backgroundColor: Colors.white24,
+                          valueColor: AlwaysStoppedAnimation(
+                              HSVColor.fromColor(color)
+                                  .withSaturation(1)
+                                  .withValue(0.3 + 0.7 * frac)
+                                  .toColor()),
                         ),
                       ),
-                    ),
+                      const SizedBox(height: 2),
+                      Stack(children: [
+                        Text('${f.power} atk',
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 8,
+                                shadows: [
+                                  Shadow(color: glow, blurRadius: 4),
+                                ])),
+                        if (v.pop != null)
+                          Positioned.fill(
+                            child: TweenAnimationBuilder<double>(
+                              key: ValueKey('p${v.popV}'),
+                              tween: Tween(begin: 0, end: 1),
+                              duration: const Duration(milliseconds: 700),
+                              builder: (context, t, _) => Opacity(
+                                opacity: (1 - t).clamp(0.0, 1.0),
+                                child: Transform.translate(
+                                  offset: Offset(0, -16 * t),
+                                  child: Text(
+                                    v.pop!,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
+                                      color: (v.pop ?? '').startsWith('CRIT')
+                                          ? Colors.orange
+                                          : ((v.pop ?? '') == 'KO!'
+                                              ? Colors.white
+                                              : (isHero
+                                                  ? Colors.redAccent
+                                                  : Colors.white)),
+                                      shadows: const [
+                                        Shadow(
+                                            blurRadius: 6,
+                                            color: Colors.black)
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (v.healPop != null)
+                          Positioned.fill(
+                            child: TweenAnimationBuilder<double>(
+                              key: ValueKey('h${v.healV}'),
+                              tween: Tween(begin: 0, end: 1),
+                              duration: const Duration(milliseconds: 700),
+                              builder: (context, t, _) => Opacity(
+                                opacity: (1 - t).clamp(0.0, 1.0),
+                                child: Transform.translate(
+                                  offset: Offset(0, -16 * t),
+                                  child: Text(
+                                    v.healPop!,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.greenAccent,
+                                      shadows: [
+                                        Shadow(
+                                            blurRadius: 6,
+                                            color: Colors.black)
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ]),
+                    ],
                   ),
-              ]),
+                ),
+              ),
             ],
           ),
         ),
@@ -327,19 +375,11 @@ class _BattlePageState extends State<BattlePage> {
     );
   }
 
-  Widget _fallbackAvatar(FighterInfo f, Color color) {
+  Widget _bg(Color color) {
     return Container(
-      width: 80,
-      height: 56,
-      color: color.withValues(alpha: 0.15),
+      color: color.withValues(alpha: 0.18),
       alignment: Alignment.center,
-      child: Text(
-        isHeroAvatar(f) ? '★${f.star}' : f.name.characters.first,
-        style: TextStyle(
-            color: color, fontSize: 18, fontWeight: FontWeight.bold),
-      ),
+      child: Icon(Icons.catching_pokemon, color: color.withValues(alpha: 0.4)),
     );
   }
-
-  bool isHeroAvatar(FighterInfo f) => f.star > 0;
 }
