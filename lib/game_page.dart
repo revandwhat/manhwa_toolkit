@@ -5,6 +5,7 @@ import 'package:flutter/material.dart' hide Hero;
 import 'package:flutter/services.dart';
 
 import 'battle_page.dart';
+import 'widgets/glow_border.dart';
 import 'services/game_service.dart';
 
 class GamePage extends StatefulWidget {
@@ -54,6 +55,8 @@ class _GamePageState extends State<GamePage>
   final _rmName = TextEditingController();
   final _artName = TextEditingController();
   final _artUrl = TextEditingController();
+  final _roomKey = TextEditingController();
+  final _roomUrl = TextEditingController();
   final _skName = TextEditingController();
   final _skVal = TextEditingController();
   String _skKindA = 'damage';
@@ -88,6 +91,8 @@ class _GamePageState extends State<GamePage>
     _artUrl.dispose();
     _skName.dispose();
     _skVal.dispose();
+    _roomKey.dispose();
+    _roomUrl.dispose();
     super.dispose();
   }
 
@@ -300,7 +305,9 @@ class _GamePageState extends State<GamePage>
             Text(
                 'ATK ${h.atk}   HP ${h.hpStat}   DEF ${h.defStat}',
                 style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600)),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1E3A8A))),
             const SizedBox(height: 6),
             Text('Level ${h.level} / ${Hero.maxLevel}'
                 '${h.bonus > 0 ? " • synthesized +${h.bonus}" : ""}'),
@@ -449,6 +456,7 @@ class _GamePageState extends State<GamePage>
   Future<void> _openSynthesize(int targetIdx) async {
     final target = _roster[targetIdx];
     final selected = <int>[];
+    var synStar = 0;
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -460,6 +468,10 @@ class _GamePageState extends State<GamePage>
               for (var i = 0; i < _roster.length; i++)
                 if (i != targetIdx && !_roster[i].locked) i
             ];
+            final avail = [
+              for (final i in fodder)
+                if (synStar == 0 || _roster[i].star == synStar) i
+            ];
             var gain = 0;
             for (final i in selected) {
               gain += Hero.fodderGain[_roster[i].star] ?? 0;
@@ -468,11 +480,27 @@ class _GamePageState extends State<GamePage>
             for (final i in selected) {
               refund += _roster[i].star * 5;
             }
+
+            void selectAllStar(int s) {
+              final cap = 10 - selected.length;
+              if (cap <= 0) return;
+              var added = 0;
+              for (final i in fodder) {
+                if (added >= cap) break;
+                if (s != 0 && _roster[i].star != s) continue;
+                if (!selected.contains(i)) {
+                  selected.add(i);
+                  added++;
+                }
+              }
+              sb(() {});
+            }
+
             return SizedBox(
-              height: MediaQuery.of(ctx).size.height * 0.85,
+              height: MediaQuery.of(ctx).size.height * 0.88,
               child: Column(children: [
                 Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Column(children: [
                     Text('Feed heroes to ${target.name}',
                         style: Theme.of(ctx)
@@ -484,48 +512,90 @@ class _GamePageState extends State<GamePage>
                         '${selected.length}/10 picked - +$gain bonus'
                         '${refund > 0 ? ", +$refund coins back" : ""}',
                         style: Theme.of(ctx).textTheme.bodySmall),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final s in const [0, 1, 2, 3, 4, 5])
+                          FilterChip(
+                            label: Text(s == 0
+                                ? 'All'
+                                : '$s★ (${fodder.where((i) => _roster[i].star == s).length})'),
+                            selected: synStar == s,
+                            onSelected: (_) {
+                              synStar = s;
+                              sb(() {});
+                            },
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        for (final s in const [1, 2, 3, 4, 5])
+                          OutlinedButton(
+                            onPressed: () => selectAllStar(s),
+                            child: Text('All $s★',
+                                style: const TextStyle(fontSize: 12)),
+                          ),
+                        if (selected.isNotEmpty)
+                          OutlinedButton(
+                            onPressed: () {
+                              selected.clear();
+                              sb(() {});
+                            },
+                            child: const Text('Clear',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                      ],
+                    ),
                   ]),
                 ),
                 Expanded(
-                  child: ListView.builder(
-                    itemCount: fodder.length,
-                    itemBuilder: (ctx, k) {
-                      final i = fodder[k];
-                      final h = _roster[i];
-                      final sel = selected.contains(i);
-                      return ListTile(
-                        dense: true,
-                        leading: Text('★${h.star}',
-                            style: TextStyle(
-                                color: _starColor[h.star]!,
-                                fontWeight: FontWeight.bold)),
-                        title: Text(h.name,
-                            maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(
-                            'Lv ${h.level} - +${Hero.fodderGain[h.star]} bonus',
-                            style: const TextStyle(fontSize: 11)),
-                        trailing: Icon(
-                            sel
-                                ? Icons.check_circle
-                                : Icons.radio_button_unchecked,
-                            color: sel ? Colors.teal : null),
-                        onTap: () {
-                          sb(() {
-                            if (sel) {
-                              selected.remove(i);
-                            } else if (selected.length < 10) {
-                              selected.add(i);
-                            } else {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                      content:
-                                          Text('Max 10 fodder at once')));
-                            }
-                          });
-                        },
-                      );
-                    },
-                  ),
+                  child: avail.isEmpty
+                      ? const Center(child: Text('No heroes for this filter'))
+                      : ListView.builder(
+                          itemCount: avail.length,
+                          itemBuilder: (ctx, k) {
+                            final i = avail[k];
+                            final h = _roster[i];
+                            final sel = selected.contains(i);
+                            return ListTile(
+                              dense: true,
+                              leading: Text('★${h.star}',
+                                  style: TextStyle(
+                                      color: _starColor[h.star]!,
+                                      fontWeight: FontWeight.bold)),
+                              title: Text(h.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis),
+                              subtitle: Text(
+                                  'Lv ${h.level} - +${Hero.fodderGain[h.star]} bonus',
+                                  style: const TextStyle(fontSize: 11)),
+                              trailing: Icon(
+                                  sel
+                                      ? Icons.check_circle
+                                      : Icons.radio_button_unchecked,
+                                  color: sel ? Colors.teal : null),
+                              onTap: () {
+                                sb(() {
+                                  if (sel) {
+                                    selected.remove(i);
+                                  } else if (selected.length < 10) {
+                                    selected.add(i);
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                            content: Text(
+                                                'Max 10 fodder at once')));
+                                  }
+                                });
+                              },
+                            );
+                          },
+                        ),
                 ),
                 Padding(
                   padding: const EdgeInsets.all(12),
@@ -841,86 +911,89 @@ class _GamePageState extends State<GamePage>
             final c = _starColor[h.star]!;
             return InkWell(
               onTap: () => _heroSheet(_roster.indexOf(h)),
-              child: Container(
-                margin: const EdgeInsets.all(2),
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c, width: 1.5),
-                ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (h.picture != null)
-                      Image.network(h.picture!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => _starHeader(h, c))
-                    else
-                      _starHeader(h, c),
-                    Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            Colors.black.withValues(alpha: 0.8),
-                          ],
+              child: GlowBorder(
+                color: c,
+                child: Container(
+                  margin: const EdgeInsets.all(2),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    color: Colors.white,
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (h.picture != null)
+                        Image.network(h.picture!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => _starHeader(h, c))
+                      else
+                        _starHeader(h, c),
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              Colors.black.withValues(alpha: 0.8),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    if (h.locked)
-                      const Positioned(
-                        top: 4,
-                        right: 4,
-                        child: Icon(Icons.lock,
-                            size: 14, color: Colors.white),
-                      ),
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text('★' * h.star,
-                                style: TextStyle(
-                                    color: c,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    shadows: [
-                                      Shadow(blurRadius: 6, color: c),
-                                    ])),
-                            Text(h.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                    shadows: [
-                                      Shadow(
-                                          blurRadius: 6,
-                                          color: Colors.black),
-                                    ])),
-                            Text(
-                                'Lv ${h.level} • ${h.power} pw'
-                                '${h.bonus > 0 ? " • +${h.bonus}" : ""}',
-                                style: const TextStyle(
-                                    fontSize: 9,
-                                    color: Colors.white,
-                                    shadows: [
-                                      Shadow(
-                                          blurRadius: 4,
-                                          color: Colors.black),
-                                    ])),
-                          ],
+                      if (h.locked)
+                        const Positioned(
+                          top: 4,
+                          right: 4,
+                          child: Icon(Icons.lock,
+                              size: 14, color: Colors.white),
+                        ),
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('★' * h.star,
+                                  style: TextStyle(
+                                      color: c,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      shadows: [
+                                        Shadow(blurRadius: 6, color: c),
+                                      ])),
+                              Text(h.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                      shadows: [
+                                        Shadow(
+                                            blurRadius: 6,
+                                            color: Colors.black),
+                                      ])),
+                              Text(
+                                  'Lv ${h.level} • ${h.power} pw'
+                                  '${h.bonus > 0 ? " • +${h.bonus}" : ""}',
+                                  style: const TextStyle(
+                                      fontSize: 9,
+                                      color: Colors.white,
+                                      shadows: [
+                                        Shadow(
+                                            blurRadius: 4,
+                                            color: Colors.black),
+                                      ])),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -1064,6 +1137,18 @@ class _GamePageState extends State<GamePage>
     if (mounted) setState(() {});
   }
 
+  Color _noteBg(String n) => n.startsWith('Synergy')
+      ? const Color(0xFF1E3A8A)
+      : n.startsWith('Bulwark')
+          ? const Color(0xFF0F2A5C)
+          : const Color(0xFFB45309);
+
+  IconData _noteIcon(String n) => n.startsWith('Synergy')
+      ? Icons.bolt
+      : n.startsWith('Bulwark')
+          ? Icons.shield
+          : Icons.groups;
+
   Widget _dungeonTab() {
     final notes = GameService.comboNotes(_team);
     return ListView(padding: const EdgeInsets.all(16), children: [
@@ -1117,13 +1202,26 @@ class _GamePageState extends State<GamePage>
           const SizedBox(height: 8),
           for (final n in notes)
             Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Row(children: [
-                const Icon(Icons.bolt, size: 14, color: Colors.orange),
-                const SizedBox(width: 6),
-                Expanded(
-                    child: Text(n, style: const TextStyle(fontSize: 12))),
-              ]),
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _noteBg(n),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(children: [
+                  Icon(_noteIcon(n), size: 15, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: Text(n,
+                          style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white))),
+                ]),
+              ),
             ),
         ],
         const SizedBox(height: 8),
@@ -1318,6 +1416,38 @@ class _GamePageState extends State<GamePage>
         const Text(
           'Art applies to every card of that hero name. Tip: upload images '
           'to Supabase Storage (public bucket) and paste the public URL.',
+          style: TextStyle(fontSize: 12),
+        ),
+        const Divider(height: 24),
+        Text('Dungeon room art',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _roomKey,
+            decoration: const InputDecoration(
+                labelText: 'Room key',
+                hintText: 'floor number, or: default / boss',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _roomUrl,
+            decoration: const InputDecoration(
+                labelText: 'https://.../room.png',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminSetRoom(
+                      _roomKey.text, _roomUrl.text.trim()),
+                  'Room art saved'),
+          child: const Text('Save room art'),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Battle background uses: exact floor -> boss room (floors 5,10..) '
+          '-> default room. Set one default + one boss to start.',
           style: TextStyle(fontSize: 12),
         ),
       ]),

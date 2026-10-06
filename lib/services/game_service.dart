@@ -158,6 +158,7 @@ class BattleResult {
     required this.enemies,
     required this.events,
     required this.comboNotes,
+    this.roomPicture,
   });
 
   final bool win;
@@ -167,6 +168,7 @@ class BattleResult {
   final List<FighterInfo> enemies;
   final List<RoundEvent> events;
   final List<String> comboNotes;
+  final String? roomPicture;
 }
 
 Uint8List _toPng(Uint8List bytes) {
@@ -271,6 +273,11 @@ class GameService {
     return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
   }
 
+  Future<Map<String, String>> roomArtMap() async {
+    final rows = await _sb.from('dungeon_rooms').select();
+    return {for (final r in rows) r['key'] as String: r['picture'] as String};
+  }
+
   Future<Map<String, String>> artMap() async {
     final rows = await _sb.from('hero_art').select();
     return {
@@ -364,6 +371,11 @@ class GameService {
     _bust();
   }
 
+  Future<void> adminSetRoom(String key, String url) async {
+    await _sb.rpc('set_room_art',
+        params: {'room_key': key.trim(), 'url': url.trim()});
+  }
+
   // ---------- admin ----------
   Future<void> adminGiveGold(String username, int amount) async {
     await _sb.rpc('give_gold',
@@ -410,6 +422,10 @@ class GameService {
     final cleared = await floorCleared();
     final f = requestedFloor.clamp(1, cleared + 1);
     final (count, ePower) = waveInfo(f);
+    final rooms = await roomArtMap();
+    final room = rooms['$f'] ??
+        (f % 5 == 0 ? rooms['boss'] : null) ??
+        rooms['default'];
 
     final notes = comboNotes(t);
     final kinds = <String, int>{};
@@ -552,6 +568,7 @@ class GameService {
       enemies: eF,
       events: events,
       comboNotes: notes,
+      roomPicture: room,
     );
   }
 }

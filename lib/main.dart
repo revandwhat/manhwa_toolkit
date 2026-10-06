@@ -27,9 +27,25 @@ class ManhwaApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Manhwa Toolkit',
+      title: 'RunaTL',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: Colors.deepPurple, useMaterial3: true),
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF1E3A8A),
+          surface: Colors.white,
+        ),
+        scaffoldBackgroundColor: Colors.white,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF1E3A8A),
+          foregroundColor: Colors.white,
+          centerTitle: true,
+        ),
+        cardTheme: const CardThemeData(
+          color: Colors.white,
+          surfaceTintColor: Colors.white,
+        ),
+      ),
       home: const RootPage(),
     );
   }
@@ -1088,7 +1104,7 @@ class _RootPageState extends State<RootPage> {
   // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
-    const titles = ['Manhwa Toolkit', 'Tools', 'Mini Game'];
+    const titles = ['RunaTL', 'Tools', 'Mini Game'];
     return Scaffold(
       appBar: AppBar(
         title: Text(titles[_tab]),
