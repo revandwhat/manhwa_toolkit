@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show compute;
+import 'package:image/image.dart' as img;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -152,6 +155,13 @@ class BattleResult {
   final List<String> comboNotes;
 }
 
+Uint8List _toPng(Uint8List bytes) {
+  final im = img.decodeImage(bytes);
+  if (im == null) throw Exception('Bad image');
+  final small = img.copyResize(im, width: 256);
+  return Uint8List.fromList(img.encodePng(small));
+}
+
 class GameService {
   static const pullCost = 30;
   static const pull10Cost = 300;
@@ -232,6 +242,12 @@ class GameService {
   Future<int> coins() async => ((await _profile())['coins'] ?? 0) as int;
   Future<int> floorCleared() async =>
       ((await _profile())['highest_floor'] ?? 0) as int;
+
+  Future<String> username() async =>
+      ((await _profile())['username'] ?? 'player') as String;
+
+  Future<String?> avatarUrl() async =>
+      (await _profile())['avatar_url'] as String?;
   Future<int> streakDays() async =>
       ((await _profile())['streak'] ?? 0) as int;
   Future<bool> isAdmin() async =>
@@ -308,6 +324,19 @@ class GameService {
   }
 
   Future<void> signOut() => _sb.auth.signOut();
+
+  Future<void> uploadAvatar(Uint8List bytes) async {
+    final png = await compute(_toPng, bytes);
+    final path = '${_uid()}/avatar.png';
+    await _sb.storage.from('avatars').uploadBinary(
+      path,
+      png,
+      fileOptions: const FileOptions(upsert: true, contentType: 'image/png'),
+    );
+    final url = _sb.storage.from('avatars').getPublicUrl(path);
+    await _sb.rpc('set_avatar', params: {'url': url});
+    _bust();
+  }
 
   // ---------- admin ----------
   Future<void> adminGiveGold(String username, int amount) async {

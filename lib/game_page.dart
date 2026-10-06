@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart' hide Hero;
+import 'package:flutter/services.dart';
 
 import 'battle_page.dart';
 import 'services/game_service.dart';
@@ -18,6 +22,8 @@ class _GamePageState extends State<GamePage>
   int _coins = 0;
   int _streak = 0;
   int _floor = 0;
+  String _username = 'player';
+  String? _avatar;
   List<Hero> _roster = [];
   List<String> _teamIds = [];
   bool _claimed = false;
@@ -26,11 +32,24 @@ class _GamePageState extends State<GamePage>
   bool _loaded = false;
 
   int _dFloor = 1;
+  final _floorCtrl = TextEditingController();
+
+  // heroes tab list state
+  String _hSearch = '';
+  int _hStar = 0; // 0 = all
+  int _hPage = 1;
+  static const _hPageSz = 36;
+
+  // team picker sheet state
+  String _pSearch = '';
+  int _pStar = 0;
+  int _pPage = 1;
+  static const _pPageSz = 25;
 
   // admin fields
   final _goldUser = TextEditingController();
   final _goldAmt = TextEditingController();
-  int _hStar = 3;
+  int _hStarA = 3;
   final _hName = TextEditingController();
   final _rmName = TextEditingController();
   final _artName = TextEditingController();
@@ -57,6 +76,7 @@ class _GamePageState extends State<GamePage>
   @override
   void dispose() {
     _tabs.dispose();
+    _floorCtrl.dispose();
     super.dispose();
   }
 
@@ -73,6 +93,15 @@ class _GamePageState extends State<GamePage>
     return out;
   }
 
+  List<Hero> _filterRoster(String q, int star) {
+    final t = q.trim().toLowerCase();
+    return _roster.where((h) {
+      if (star > 0 && h.star != star) return false;
+      if (t.isNotEmpty && !h.name.toLowerCase().contains(t)) return false;
+      return true;
+    }).toList();
+  }
+
   Future<void> _refresh() async {
     try {
       final coins = await _game.coins();
@@ -82,6 +111,8 @@ class _GamePageState extends State<GamePage>
       final claimed = await _game.claimedToday();
       final admin = await _game.isAdmin();
       final team = await _game.loadTeam();
+      final uname = await _game.username();
+      final av = await _game.avatarUrl();
       if (!mounted) return;
       setState(() {
         _coins = coins;
@@ -90,9 +121,13 @@ class _GamePageState extends State<GamePage>
         _streak = streak;
         _claimed = claimed;
         _isAdmin = admin;
-        _teamIds =
-            team.where((id) => roster.any((h) => h.id == id)).toList();
-        if (_dFloor > floor + 1) _dFloor = floor + 1;
+        _username = uname;
+        _avatar = av;
+        _teamIds = team.where((id) => roster.any((h) => h.id == id)).toList();
+        if (_floorCtrl.text.isEmpty) {
+          _dFloor = floor + 1;
+          _floorCtrl.text = '$_dFloor';
+        }
         _loaded = true;
       });
     } catch (_) {
@@ -112,6 +147,23 @@ class _GamePageState extends State<GamePage>
       _snack(r == -1 ? 'Already claimed today' : '+$r coins!');
     } catch (e) {
       _snack(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    _refresh();
+  }
+
+  Future<void> _changeAvatar() async {
+    final r = await FilePicker.platform.pickFiles(type: FileType.image);
+    final path = r?.files.single.path;
+    if (path == null) return;
+    setState(() => _busy = true);
+    try {
+      final bytes = await File(path).readAsBytes();
+      await _game.uploadAvatar(bytes);
+      _snack('Profile photo updated');
+    } catch (e) {
+      _snack('Upload failed: ${e.toString().replaceFirst('Exception: ', '')}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -368,12 +420,17 @@ class _GamePageState extends State<GamePage>
   Future<void> _battle() async {
     final team = _team;
     if (team.isEmpty) {
-      _snack('Select your team first (tap heroes below)');
+      _snack('Select your team first');
+      return;
+    }
+    final f = int.tryParse(_floorCtrl.text.trim()) ?? _dFloor;
+    if (f < 1) {
+      _snack('Floor must be 1 or more');
       return;
     }
     setState(() => _busy = true);
     try {
-      final result = await _game.battle(team, _dFloor);
+      final result = await _game.battle(team, f);
       if (!mounted) return;
       await Navigator.push(context,
           MaterialPageRoute(builder: (_) => BattlePage(result: result)));
@@ -385,7 +442,6 @@ class _GamePageState extends State<GamePage>
     }
   }
 
-  // ---------- admin actions ----------
   Future<void> _run(Future<void> Function() f, String okMsg) async {
     setState(() => _busy = true);
     try {
@@ -397,6 +453,37 @@ class _GamePageState extends State<GamePage>
       if (mounted) setState(() => _busy = false);
     }
     _refresh();
+  }
+
+  // ---------- shared list controls ----------
+  Widget _searchField(String hint, void Function(String) on) {
+    return TextField(
+      onChanged: on,
+      decoration: InputDecoration(
+        hintText: hint,
+        prefixIcon: const Icon(Icons.search),
+        isDense: true,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+
+  Widget _starChips(int cur, void Function(int) on) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        ChoiceChip(
+            label: const Text('All'),
+            selected: cur == 0,
+            onSelected: (_) => on(0)),
+        for (var s = 1; s <= 5; s++)
+          ChoiceChip(
+              label: Text('$s★'),
+              selected: cur == s,
+              onSelected: (_) => on(s)),
+      ],
+    );
   }
 
   @override
@@ -440,6 +527,50 @@ class _GamePageState extends State<GamePage>
 
   Widget _daily() {
     return ListView(padding: const EdgeInsets.all(16), children: [
+      _card('Profile', [
+        Row(children: [
+          GestureDetector(
+            onTap: _busy ? null : _changeAvatar,
+            child: Stack(children: [
+              CircleAvatar(
+                radius: 32,
+                backgroundImage:
+                    _avatar != null ? NetworkImage(_avatar!) : null,
+                child: _avatar == null
+                    ? const Icon(Icons.person, size: 32)
+                    : null,
+              ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: CircleAvatar(
+                  radius: 11,
+                  backgroundColor:
+                      Theme.of(context).colorScheme.primary,
+                  child: const Icon(Icons.camera_alt,
+                      size: 13, color: Colors.white),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_username,
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Text('Highest dungeon: $_floor',
+                    style: Theme.of(context).textTheme.bodySmall),
+                Text('Tap the photo to change it',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ),
+        ]),
+      ]),
       _coinsBar(),
       _card('Daily reward', [
         Text(_claimed
@@ -493,16 +624,27 @@ class _GamePageState extends State<GamePage>
   }
 
   Widget _heroesTab() {
-    if (_roster.isEmpty) {
-      return ListView(padding: const EdgeInsets.all(16), children: [
-        _coinsBar(),
-        _card('Heroes (0)', [const Text('No heroes yet - go pull!')]),
-      ]);
-    }
+    final filtered = _filterRoster(_hSearch, _hStar);
+    final shown = filtered.take(_hPage * _hPageSz).toList();
     return Column(children: [
       Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
         child: _coinsBar(),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        child: Column(children: [
+          _searchField('Search heroes...',
+              (v) => setState(() {
+                    _hSearch = v;
+                    _hPage = 1;
+                  })),
+          const SizedBox(height: 8),
+          _starChips(_hStar, (s) => setState(() {
+                _hStar = s;
+                _hPage = 1;
+              })),
+        ]),
       ),
       Expanded(
         child: GridView.builder(
@@ -511,12 +653,12 @@ class _GamePageState extends State<GamePage>
             crossAxisCount: 3,
             childAspectRatio: 0.62,
           ),
-          itemCount: _roster.length,
+          itemCount: shown.length,
           itemBuilder: (ctx, i) {
-            final h = _roster[i];
+            final h = shown[i];
             final c = _starColor[h.star]!;
             return InkWell(
-              onTap: () => _heroSheet(i),
+              onTap: () => _heroSheet(_roster.indexOf(h)),
               child: Card(
                 color: c.withValues(alpha: 0.12),
                 shape: RoundedRectangleBorder(
@@ -559,6 +701,21 @@ class _GamePageState extends State<GamePage>
           },
         ),
       ),
+      if (filtered.length > shown.length)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          child: OutlinedButton(
+            onPressed: () => setState(() => _hPage++),
+            child: Text(
+                'Show more (${filtered.length - shown.length} hidden)'),
+          ),
+        ),
+      if (filtered.isEmpty)
+        Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text('No heroes match.',
+              style: Theme.of(context).textTheme.bodySmall),
+        ),
     ]);
   }
 
@@ -572,28 +729,148 @@ class _GamePageState extends State<GamePage>
     );
   }
 
+  Future<void> _openTeamPicker() async {
+    _pSearch = '';
+    _pStar = 0;
+    _pPage = 1;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, sb) {
+            final filtered = _filterRoster(_pSearch, _pStar);
+            final shown = filtered.take(_pPage * _pPageSz).toList();
+            return SizedBox(
+              height: MediaQuery.of(ctx).size.height * 0.85,
+              child: Column(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Column(children: [
+                    _searchField('Search heroes...', (v) {
+                      _pSearch = v;
+                      _pPage = 1;
+                      sb(() {});
+                    }),
+                    const SizedBox(height: 8),
+                    _starChips(_pStar, (s) {
+                      _pStar = s;
+                      _pPage = 1;
+                      sb(() {});
+                    }),
+                    const SizedBox(height: 4),
+                    Text('${_teamIds.length} / 5 selected',
+                        style: Theme.of(ctx).textTheme.bodySmall),
+                  ]),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: shown.length,
+                    itemBuilder: (ctx, i) {
+                      final h = shown[i];
+                      final sel = _teamIds.contains(h.id);
+                      final order = _teamIds.indexOf(h.id) + 1;
+                      return ListTile(
+                        dense: true,
+                        leading: h.picture != null
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Image.network(h.picture!,
+                                    width: 40,
+                                    height: 40,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) =>
+                                        Text('★${h.star}',
+                                            style: TextStyle(
+                                                color: _starColor[h.star]!,
+                                                fontWeight:
+                                                    FontWeight.bold))))
+                            : Text('★${h.star}',
+                                style: TextStyle(
+                                    color: _starColor[h.star]!,
+                                    fontWeight: FontWeight.bold)),
+                        title: Text(h.name,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                            'Lv ${h.level} • ${h.power} pw'
+                            '${h.skill.name.isNotEmpty ? " • ${h.skill.name}" : ""}',
+                            style: const TextStyle(fontSize: 11)),
+                        trailing: sel
+                            ? CircleAvatar(
+                                radius: 12,
+                                child: Text('$order',
+                                    style: const TextStyle(fontSize: 11)))
+                            : const Icon(Icons.add_circle_outline),
+                        onTap: () {
+                          _toggleTeam(h.id);
+                          sb(() {});
+                        },
+                      );
+                    },
+                  ),
+                ),
+                if (filtered.length > shown.length)
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: OutlinedButton(
+                      onPressed: () {
+                        _pPage++;
+                        sb(() {});
+                      },
+                      child: Text(
+                          'Show more (${filtered.length - shown.length} hidden)'),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: FilledButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Done'),
+                  ),
+                ),
+              ]),
+            );
+          },
+        );
+      },
+    );
+    if (mounted) setState(() {});
+  }
+
   Widget _dungeonTab() {
-    final maxFloor = _floor + 1;
-    final (cnt, pw) = GameService.waveInfo(_dFloor);
     final notes = GameService.comboNotes(_team);
     return ListView(padding: const EdgeInsets.all(16), children: [
       _coinsBar(),
-      _card('Dungeon', [
+      _card('Floor', [
         Text('Highest floor cleared: ${_floor == 0 ? "none" : "$_floor"}'),
         const SizedBox(height: 8),
-        Slider(
-          value: _dFloor.clamp(1, maxFloor).toDouble(),
-          min: 1,
-          max: maxFloor.toDouble(),
-          divisions: maxFloor - 1 > 0 ? maxFloor - 1 : 1,
-          label: '$_dFloor',
-          onChanged: (v) => setState(() => _dFloor = v.round()),
+        TextField(
+          controller: _floorCtrl,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(
+            labelText: 'Floor to fight',
+            hintText: 'any floor - even beyond your record',
+            border: OutlineInputBorder(),
+          ),
+          onChanged: (v) =>
+              setState(() => _dFloor = int.tryParse(v) ?? _dFloor),
         ),
-        Text('Floor $_dFloor: $cnt monsters, $pw power each'
-            '${_dFloor % 5 == 0 ? " + BOSS" : ""}'
-            ' - reward ${40 + _dFloor * 12} coins'),
+        const SizedBox(height: 8),
+        Text(
+          'Floor $_dFloor: ${GameService.waveInfo(_dFloor).$1} monsters, '
+          '${GameService.waveInfo(_dFloor).$2} power each'
+          '${_dFloor % 5 == 0 ? " + BOSS" : ""} - reward ${40 + _dFloor * 12} coins',
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Note: your record only advances by clearing your next floor '
+          'in order - free input is for experimenting.',
+          style: TextStyle(fontSize: 12),
+        ),
       ]),
-      _card('Your team (max 5 - tap to add, order = attack order)', [
+      _card('Your team (max 5 - order = attack order)', [
         if (_team.isEmpty)
           const Text('No heroes selected yet.'),
         if (_team.isNotEmpty)
@@ -624,17 +901,10 @@ class _GamePageState extends State<GamePage>
             ),
         ],
         const SizedBox(height: 8),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final h in _roster)
-              FilterChip(
-                label: Text('${h.name} ★${h.star}'),
-                selected: _teamIds.contains(h.id),
-                onSelected: (_) => _toggleTeam(h.id),
-              ),
-          ],
+        OutlinedButton.icon(
+          onPressed: _roster.isEmpty ? null : _openTeamPicker,
+          icon: const Icon(Icons.group_add),
+          label: const Text('Choose heroes'),
         ),
       ]),
       _card('Battle', [
@@ -645,8 +915,8 @@ class _GamePageState extends State<GamePage>
         ),
         const SizedBox(height: 8),
         const Text(
-            'Watch the fight - speed it up or skip. Enemy waves hit random '
-            'heroes, so keep the team alive with Vampiric/Bulwark.',
+            'Waves hit random heroes - sustain (Vampiric) and armor '
+            '(Bulwark stacks) keep a team of 5 alive.',
             style: TextStyle(fontSize: 12)),
       ]),
     ]);
@@ -661,6 +931,13 @@ class _GamePageState extends State<GamePage>
             SizedBox(width: 8),
             Expanded(child: Text('Admin only. Your account is not an admin.')),
           ]),
+          const SizedBox(height: 8),
+          const Text(
+            'To become admin, run in Supabase SQL editor:\n'
+            "update profiles set is_admin = true where username = 'YOUR_USERNAME';\n"
+            'then reopen the app.',
+            style: TextStyle(fontSize: 12),
+          ),
         ]),
       ]);
     }
@@ -695,11 +972,14 @@ class _GamePageState extends State<GamePage>
         Row(children: [
           Expanded(
             child: DropdownButtonFormField<int>(
-              initialValue: _hStar,
+              initialValue: _hStarA,
               decoration: const InputDecoration(
                   labelText: 'Star', border: OutlineInputBorder()),
-              items: [for (var s = 1; s <= 5; s++) DropdownMenuItem(value: s, child: Text('$s★'))],
-              onChanged: (v) => setState(() => _hStar = v ?? 3),
+              items: [
+                for (var s = 1; s <= 5; s++)
+                  DropdownMenuItem(value: s, child: Text('$s★'))
+              ],
+              onChanged: (v) => setState(() => _hStarA = v ?? 3),
             ),
           ),
           const SizedBox(width: 8),
@@ -715,8 +995,7 @@ class _GamePageState extends State<GamePage>
           OutlinedButton(
             onPressed: _busy
                 ? null
-                : () => _run(
-                    () => _game.adminAddHero(_hStar, _hName.text),
+                : () => _run(() => _game.adminAddHero(_hStarA, _hName.text),
                     'Hero added to pool'),
             child: const Text('Add hero'),
           ),
@@ -732,7 +1011,8 @@ class _GamePageState extends State<GamePage>
         TextField(
             controller: _rmName,
             decoration: const InputDecoration(
-                labelText: 'Hero name (for remove)', border: OutlineInputBorder())),
+                labelText: 'Hero name (for remove)',
+                border: OutlineInputBorder())),
         const Divider(height: 24),
         Text('Set hero art (picture URL)',
             style: Theme.of(context).textTheme.labelLarge),
@@ -758,9 +1038,8 @@ class _GamePageState extends State<GamePage>
         ),
         const SizedBox(height: 8),
         const Text(
-          'Art applies to every card of that hero name - gacha, roster and '
-          'battle. Tip: upload images to Supabase Storage (public bucket) '
-          'and paste the public URL.',
+          'Art applies to every card of that hero name. Tip: upload images '
+          'to Supabase Storage (public bucket) and paste the public URL.',
           style: TextStyle(fontSize: 12),
         ),
       ]),
