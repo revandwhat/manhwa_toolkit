@@ -43,6 +43,36 @@ class Skill {
   String get desc => descFor(kind, value);
 }
 
+class SkinInfo {
+  SkinInfo({
+    required this.id,
+    required this.name,
+    required this.starOverride,
+    required this.atk,
+    required this.hp,
+    required this.def,
+    this.picture,
+  });
+
+  final String id;
+  final String name;
+  final int starOverride; // 0 = keep rarity
+  final int atk;
+  final int hp;
+  final int def;
+  final String? picture;
+
+  factory SkinInfo.fromRow(Map<String, dynamic> j) => SkinInfo(
+        id: j['id'] as String,
+        name: j['name'] as String,
+        starOverride: (j['star_override'] as num?)?.toInt() ?? 0,
+        atk: (j['atk_bonus'] as num?)?.toInt() ?? 0,
+        hp: (j['hp_bonus'] as num?)?.toInt() ?? 0,
+        def: (j['def_bonus'] as num?)?.toInt() ?? 0,
+        picture: j['picture'] as String?,
+      );
+}
+
 class Hero {
   Hero({
     required this.id,
@@ -54,46 +84,79 @@ class Hero {
     this.picture,
     this.exp = 0,
     this.bonus = 0,
+    this.baseAtk,
+    this.baseHp,
+    this.baseDef,
+    this.skin,
+    this.ownedSkins = const [],
   });
 
   final String id;
   final String name;
-  final int star;
+  final int star; // effective (skin-applied) rarity
   final int level;
   final Skill skill;
   final bool locked;
   final String? picture;
   final int exp;
   final int bonus;
+  final int? baseAtk;
+  final int? baseHp;
+  final int? baseDef;
+  final SkinInfo? skin;
+  final List<SkinInfo> ownedSkins;
 
   static const maxLevel = 30;
-  static const _basePower = {1: 40, 2: 80, 3: 150, 4: 260, 5: 450};
-  static const fodderGain = {1: 1, 2: 2, 3: 4, 4: 8, 5: 15};
+  static const _basePower = {
+    1: 40, 2: 80, 3: 150, 4: 260, 5: 450, 6: 700, 7: 1100,
+  };
+  static const fodderGain = {1: 1, 2: 2, 3: 4, 4: 8, 5: 15, 6: 30, 7: 50};
 
-  int get power =>
-      (_basePower[star]! * (1 + 0.07 * (level - 1))).round() + bonus * 2;
-  int get atk => power;
-  int get hpStat => power * 6;
-  int get defStat => (power * 0.5).round();
+  double get _scale => 1 + 0.07 * (level - 1);
+  int get _baseA => baseAtk ?? _basePower[star]!;
+
+  int get atk => (_baseA * _scale).round() + bonus * 2 + (skin?.atk ?? 0);
+  int get power => atk;
+  int get hpStat =>
+      ((baseHp ?? _baseA * 6) * _scale).round() + (skin?.hp ?? 0);
+  int get defStat =>
+      ((baseDef ?? _baseA * 0.5) * _scale).round() + (skin?.def ?? 0);
   int get expNeed => level * 40;
   int get sellValue => star * 20 + (level - 1) * 8;
 
-  factory Hero.fromRow(Map<String, dynamic> j, {Map<String, String>? art}) =>
-      Hero(
-        id: j['id'] as String,
-        name: j['name'] as String,
-        star: (j['star'] as num).toInt(),
-        level: (j['level'] as num?)?.toInt() ?? 1,
-        skill: Skill(
-          name: (j['skill_name'] ?? '') as String,
-          kind: (j['skill_kind'] ?? '') as String,
-          value: ((j['skill_value'] ?? 0) as num).toDouble(),
-        ),
-        locked: (j['locked'] as bool?) ?? false,
-        picture: art?[j['name'] as String],
-        exp: (j['exp'] as num?)?.toInt() ?? 0,
-        bonus: (j['bonus'] as num?)?.toInt() ?? 0,
-      );
+  factory Hero.fromRow(Map<String, dynamic> j,
+      {Map<String, String>? art,
+      Map<String, List<SkinInfo>> skinsByCard = const {}}) {
+    final owned = skinsByCard[j['id'] as String] ?? const <SkinInfo>[];
+    final eq = j['equipped_skin'] as String?;
+    SkinInfo? skin;
+    for (final s in owned) {
+      if (s.id == eq) skin = s;
+    }
+    final eff = (skin != null && skin.starOverride > 0)
+        ? skin.starOverride
+        : (j['star'] as num).toInt();
+    return Hero(
+      id: j['id'] as String,
+      name: j['name'] as String,
+      star: eff,
+      level: (j['level'] as num?)?.toInt() ?? 1,
+      skill: Skill(
+        name: (j['skill_name'] ?? '') as String,
+        kind: (j['skill_kind'] ?? '') as String,
+        value: ((j['skill_value'] ?? 0) as num).toDouble(),
+      ),
+      locked: (j['locked'] as bool?) ?? false,
+      picture: skin?.picture ?? art?[j['name'] as String],
+      exp: (j['exp'] as num?)?.toInt() ?? 0,
+      bonus: (j['bonus'] as num?)?.toInt() ?? 0,
+      baseAtk: (j['base_atk'] as num?)?.toInt(),
+      baseHp: (j['base_hp'] as num?)?.toInt(),
+      baseDef: (j['base_def'] as num?)?.toInt(),
+      skin: skin,
+      ownedSkins: owned,
+    );
+  }
 }
 
 class PullResult {
@@ -106,6 +169,7 @@ class FighterInfo {
     required this.id,
     required this.name,
     required this.power,
+    required this.maxHp,
     this.star = 0,
     this.picture,
     this.boss = false,
@@ -114,6 +178,7 @@ class FighterInfo {
   final String id;
   final String name;
   final int power;
+  final int maxHp;
   final int star;
   final String? picture;
   final bool boss;
@@ -169,6 +234,12 @@ class BattleResult {
   final List<RoundEvent> events;
   final List<String> comboNotes;
   final String? roomPicture;
+}
+
+class LeaderRow {
+  LeaderRow({required this.username, required this.floor});
+  final String username;
+  final int floor;
 }
 
 Uint8List _toPng(Uint8List bytes) {
@@ -268,18 +339,22 @@ class GameService {
   Future<String?> avatarUrl() async =>
       (await _profile())['avatar_url'] as String?;
 
-  Future<List<Map<String, dynamic>>> leaderboard() async {
+  static String _today() {
+    final d = DateTime.now();
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<List<LeaderRow>> leaderboard() async {
     final rows = await _sb
         .from('profiles')
         .select('username, highest_floor')
         .order('highest_floor', ascending: false)
         .limit(50);
-    return (rows as List).cast<Map<String, dynamic>>();
-  }
-
-  static String _today() {
-    final d = DateTime.now();
-    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    return (rows as List)
+        .map((r) => LeaderRow(
+            username: (r as Map<String, dynamic>)['username'] as String? ?? '?',
+            floor: (r['highest_floor'] as num?)?.toInt() ?? 0))
+        .toList();
   }
 
   Future<Map<String, String>> roomArtMap() async {
@@ -289,10 +364,29 @@ class GameService {
 
   Future<Map<String, String>> artMap() async {
     final rows = await _sb.from('hero_art').select();
-    return {
-      for (final r in rows)
-        r['name'] as String: r['picture'] as String,
-    };
+    return {for (final r in rows) r['name'] as String: r['picture'] as String};
+  }
+
+  Future<Map<String, List<SkinInfo>>> _skinsByCard(
+      List<String> cardIds) async {
+    final byCard = <String, List<SkinInfo>>{};
+    if (cardIds.isEmpty) return byCard;
+    final catalog = <String, SkinInfo>{};
+    final skinRows = await _sb.from('card_skins').select();
+    for (final r in skinRows) {
+      final s = SkinInfo.fromRow(r);
+      catalog[s.id] = s;
+    }
+    final grants = await _sb
+        .from('card_skin_grants')
+        .select()
+        .inFilter('card_id', cardIds);
+    for (final g in grants) {
+      final s = catalog[g['skin_id'] as String];
+      if (s == null) continue;
+      byCard.putIfAbsent(g['card_id'] as String, () => []).add(s);
+    }
+    return byCard;
   }
 
   Future<List<Hero>> roster() async {
@@ -304,7 +398,12 @@ class GameService {
         .order('star', ascending: false)
         .order('level', ascending: false)
         .order('created_at', ascending: false);
-    return rows.map((e) => Hero.fromRow(e, art: art)).toList();
+    final cards = (rows as List).cast<Map<String, dynamic>>();
+    final skins =
+        await _skinsByCard([for (final c in cards) c['id'] as String]);
+    return cards
+        .map((c) => Hero.fromRow(c, art: art, skinsByCard: skins))
+        .toList();
   }
 
   Future<int> claimDaily() async {
@@ -351,6 +450,10 @@ class GameService {
         params: {'card_id': roster[index].id, 'to_username': username});
   }
 
+  Future<void> equipSkin(String cardId, String? skinId) async {
+    await _sb.rpc('equip_skin', params: {'p_card': cardId, 'p_skin': skinId});
+  }
+
   Future<(int, int)> synthesize(int targetIdx, List<int> fodderIdx) async {
     final roster = await this.roster();
     if (targetIdx >= roster.length) throw Exception('Card not found');
@@ -367,24 +470,6 @@ class GameService {
 
   Future<void> signOut() => _sb.auth.signOut();
 
-  Future<void> uploadAvatar(Uint8List bytes) async {
-    final png = await compute(_toPng, bytes);
-    final path = '${_uid()}/avatar.png';
-    await _sb.storage.from('avatars').uploadBinary(
-      path,
-      png,
-      fileOptions: const FileOptions(upsert: true, contentType: 'image/png'),
-    );
-    final url = _sb.storage.from('avatars').getPublicUrl(path);
-    await _sb.rpc('set_avatar', params: {'url': url});
-    _bust();
-  }
-
-  Future<void> adminSetRoom(String key, String url) async {
-    await _sb.rpc('set_room_art',
-        params: {'room_key': key.trim(), 'url': url.trim()});
-  }
-
   // ---------- admin ----------
   Future<void> adminGiveGold(String username, int amount) async {
     await _sb.rpc('give_gold',
@@ -392,13 +477,21 @@ class GameService {
   }
 
   Future<void> adminAddHero(int star, String name,
-      {String? skillName, String? skillKind, double? skillValue}) async {
+      {String? skillName,
+      String? skillKind,
+      double? skillValue,
+      int? atk,
+      int? hp,
+      int? def}) async {
     await _sb.rpc('add_hero', params: {
       'p_star': star,
       'p_name': name.trim(),
       'sname': skillName,
       'skind': skillKind,
       'svalue': skillValue,
+      'p_atk': atk,
+      'p_hp': hp,
+      'p_def': def,
     });
   }
 
@@ -409,6 +502,54 @@ class GameService {
   Future<void> adminSetArt(String name, String url) async {
     await _sb.rpc('set_hero_art',
         params: {'hero_name': name.trim(), 'url': url.trim()});
+  }
+
+  Future<void> adminSetRoom(String key, String url) async {
+    await _sb.rpc('set_room_art',
+        params: {'room_key': key.trim(), 'url': url.trim()});
+  }
+
+  Future<void> adminGiveCard(String username, int star, String name) async {
+    await _sb.rpc('give_card', params: {
+      'p_username': username.trim(),
+      'p_star': star,
+      'p_name': name.trim(),
+    });
+  }
+
+  Future<void> adminCreateSkin(String hero, String name, int starOverride,
+      int atk, int hp, int def, String url) async {
+    await _sb.rpc('create_skin', params: {
+      'p_hero': hero.trim(),
+      'p_name': name.trim(),
+      'p_star': starOverride,
+      'p_atk': atk,
+      'p_hp': hp,
+      'p_def': def,
+      'p_url': url.trim(),
+    });
+  }
+
+  Future<void> adminGrantSkin(String username, String hero, String skin) async {
+    await _sb.rpc('grant_skin', params: {
+      'p_username': username.trim(),
+      'p_hero': hero.trim(),
+      'p_skin_name': skin.trim(),
+    });
+  }
+
+  Future<void> uploadAvatar(Uint8List bytes) async {
+    final png = await compute(_toPng, bytes);
+    final path = '${_uid()}/avatar.png';
+    await _sb.storage.from('avatars').uploadBinary(
+          path,
+          png,
+          fileOptions:
+              const FileOptions(upsert: true, contentType: 'image/png'),
+        );
+    final url = _sb.storage.from('avatars').getPublicUrl(path);
+    await _sb.rpc('set_avatar', params: {'url': url});
+    _bust();
   }
 
   // ---------- team persistence ----------
@@ -462,6 +603,7 @@ class GameService {
           id: 'H$i',
           name: t[i].name,
           power: t[i].atk,
+          maxHp: t[i].hpStat,
           star: t[i].star,
           picture: t[i].picture));
       hMax.add(t[i].hpStat);
@@ -479,6 +621,7 @@ class GameService {
           id: 'E$i',
           name: _enemyAt(f, i, count),
           power: pw,
+          maxHp: pw * 6,
           boss: isBoss));
       eMax.add(pw * 6);
       eHp.add(pw * 6);
@@ -494,7 +637,7 @@ class GameService {
         if (!hAlive[i] || !eAlive.any((x) => x)) continue;
         final h = t[i];
         var dmg =
-            h.power * (0.85 + _rng.nextDouble() * 0.3) * (boost[h.id] ?? 1.0);
+            h.atk * (0.85 + _rng.nextDouble() * 0.3) * (boost[h.id] ?? 1.0);
         var crit = false;
         switch (h.skill.kind) {
           case 'damage':
@@ -539,9 +682,9 @@ class GameService {
         final alive = [for (var i = 0; i < hAlive.length; i++) if (hAlive[i]) i];
         final ti = alive[_rng.nextInt(alive.length)];
         final raw = ef.round();
-        final eff = max((raw * 0.25).round(), raw - (t[ti].defStat * 0.12).round());
-        final d = eff;
-        hHp[ti] -= d;
+        final eff =
+            max((raw * 0.25).round(), raw - (t[ti].defStat * 0.12).round());
+        hHp[ti] -= eff;
         final ko = hHp[ti] <= 0;
         if (ko) hAlive[ti] = false;
         hits.add(HitEvent(
@@ -549,7 +692,7 @@ class GameService {
           targetId: hF[ti].id,
           attackerName: eF[j].name,
           targetName: hF[ti].name,
-          dmg: d,
+          dmg: eff,
           crit: false,
           heal: 0,
           ko: ko,

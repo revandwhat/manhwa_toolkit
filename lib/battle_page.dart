@@ -45,10 +45,10 @@ class _BattlePageState extends State<BattlePage> {
     super.initState();
     _v = {};
     for (final f in widget.result.heroes) {
-      _v[f.id] = _Fv(f.power * 6);
+      _v[f.id] = _Fv(f.maxHp);
     }
     for (final f in widget.result.enemies) {
-      _v[f.id] = _Fv(f.power * 6);
+      _v[f.id] = _Fv(f.maxHp);
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _play());
   }

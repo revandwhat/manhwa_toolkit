@@ -31,7 +31,7 @@ class _GamePageState extends State<GamePage>
   bool _busy = false;
   bool _isAdmin = false;
   bool _loaded = false;
-  Future<List<Map<String, dynamic>>>? _lbFuture;
+  Future<List<LeaderRow>>? _lbFuture;
 
   int _dFloor = 1;
   final _floorCtrl = TextEditingController();
@@ -58,6 +58,22 @@ class _GamePageState extends State<GamePage>
   final _artUrl = TextEditingController();
   final _roomKey = TextEditingController();
   final _roomUrl = TextEditingController();
+  final _ahAtk = TextEditingController();
+  final _ahHp = TextEditingController();
+  final _ahDef = TextEditingController();
+  final _gcUser = TextEditingController();
+  final _gcName = TextEditingController();
+  int _gcStar = 6;
+  final _csHero = TextEditingController();
+  final _csName = TextEditingController();
+  final _csAtk = TextEditingController();
+  final _csHp = TextEditingController();
+  final _csDef = TextEditingController();
+  final _csUrl = TextEditingController();
+  int _csStar = 0;
+  final _gsUser = TextEditingController();
+  final _gsHero = TextEditingController();
+  final _gsSkin = TextEditingController();
   final _skName = TextEditingController();
   final _skVal = TextEditingController();
   String _skKindA = 'damage';
@@ -68,6 +84,8 @@ class _GamePageState extends State<GamePage>
     3: Colors.blue,
     4: Colors.purple,
     5: Colors.amber,
+    6: Color(0xFF00E5FF),
+    7: Color(0xFFFFD700),
   };
 
   @override
@@ -94,6 +112,20 @@ class _GamePageState extends State<GamePage>
     _skVal.dispose();
     _roomKey.dispose();
     _roomUrl.dispose();
+    _ahAtk.dispose();
+    _ahHp.dispose();
+    _ahDef.dispose();
+    _gcUser.dispose();
+    _gcName.dispose();
+    _csHero.dispose();
+    _csName.dispose();
+    _csAtk.dispose();
+    _csHp.dispose();
+    _csDef.dispose();
+    _csUrl.dispose();
+    _gsUser.dispose();
+    _gsHero.dispose();
+    _gsSkin.dispose();
     super.dispose();
   }
 
@@ -328,6 +360,52 @@ class _GamePageState extends State<GamePage>
               Text('EXP ${h.exp}/${h.expNeed}',
                   style: const TextStyle(fontSize: 11)),
             ]),
+            if (h.ownedSkins.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text('Skins (${h.ownedSkins.length})',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text(h.skin == null
+                  ? 'None equipped'
+                  : 'Equipped: ${h.skin!.name}'),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final s in h.ownedSkins)
+                    if (h.skin?.id != s.id)
+                      OutlinedButton(
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          try {
+                            await _game.equipSkin(h.id, s.id);
+                            _snack('Skin equipped: ${s.name}');
+                          } catch (e) {
+                            _snack(e.toString()
+                                .replaceFirst('Exception: ', ''));
+                          }
+                          _refresh();
+                        },
+                        child: Text(s.name),
+                      ),
+                  if (h.skin != null)
+                    OutlinedButton(
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        try {
+                          await _game.equipSkin(h.id, null);
+                          _snack('Skin removed');
+                        } catch (e) {
+                          _snack(e.toString()
+                              .replaceFirst('Exception: ', ''));
+                        }
+                        _refresh();
+                      },
+                      child: const Text('Remove skin'),
+                    ),
+                ],
+              ),
+            ],
             const SizedBox(height: 8),
             Text('Skill: ${h.skill.name}',
                 style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -519,13 +597,42 @@ class _GamePageState extends State<GamePage>
                       spacing: 6,
                       runSpacing: 6,
                       children: [
-                        for (final s in const [0, 1, 2, 3, 4, 5])
+                        for (final s in const [0, 1, 2, 3, 4, 5, 6, 7])
                           FilterChip(
                             label: Text(s == 0
                                 ? 'All'
                                 : '$s★ (${fodder.where((i) => _roster[i].star == s).length})'),
                             selected: synStar == s,
-                            onSelected: (_) {
+                            onSelected: (_) async {
+                              if (s == 0) {
+                                synStar = 0;
+                                sb(() {});
+                                return;
+                              }
+                              final yes = await showDialog<bool>(
+                                context: context,
+                                builder: (dctx) => AlertDialog(
+                                  title: Text('Use all $s★ heroes?'),
+                                  content: const Text(
+                                      'Auto-selects every unlocked hero of that star (max 10) as fodder. Locked heroes are never touched.'),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(dctx, false),
+                                        child: const Text('Cancel')),
+                                    FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(dctx, true),
+                                        child: const Text('Yes, use them')),
+                                  ],
+                                ),
+                              );
+                              if (yes != true) return;
+                              selected.clear();
+                              for (final i in fodder) {
+                                if (selected.length >= 10) break;
+                                if (_roster[i].star == s) selected.add(i);
+                              }
                               synStar = s;
                               sb(() {});
                             },
@@ -536,7 +643,7 @@ class _GamePageState extends State<GamePage>
                     Wrap(
                       spacing: 6,
                       children: [
-                        for (final s in const [1, 2, 3, 4, 5])
+                        for (final s in const [1, 2, 3, 4, 5, 6, 7])
                           OutlinedButton(
                             onPressed: () => selectAllStar(s),
                             child: Text('All $s★',
@@ -718,7 +825,7 @@ class _GamePageState extends State<GamePage>
             label: const Text('All'),
             selected: cur == 0,
             onSelected: (_) => on(0)),
-        for (var s = 1; s <= 5; s++)
+        for (var s = 1; s <= 7; s++)
           ChoiceChip(
               label: Text('$s★'),
               selected: cur == s,
@@ -782,7 +889,7 @@ class _GamePageState extends State<GamePage>
                   color: Theme.of(context).colorScheme.surface,
                   child: _avatar != null
                       ? Image.network(_avatar!,
-                          fit: BoxFit.contain,
+                          fit: BoxFit.cover,
                           errorBuilder: (_, _, _) =>
                               const Icon(Icons.person, size: 40))
                       : const Icon(Icons.person, size: 40),
@@ -848,8 +955,9 @@ class _GamePageState extends State<GamePage>
       _coinsBar(),
       _card('Summon heroes', [
         const Text(
-          'Rates: 1★ 34%, 2★ 35%, 3★ 25%, 4★ 5%, 5★ 1%. No pity - every roll '
-          'happens on the server.',
+          'Rates: 1★ 34%, 2★ 35%, 3★ 25%, 4★ 5%, 5★ 1%, 6★ 0.5%. '
+          '7★ exists but ONLY via admin Give card. No pity - rolls happen '
+          'on the server.',
         ),
         const SizedBox(height: 12),
         Wrap(
@@ -1292,7 +1400,7 @@ class _GamePageState extends State<GamePage>
             style: TextStyle(fontSize: 12)),
       ]),
       _card('Leaderboard - highest floor', [
-        FutureBuilder<List<Map<String, dynamic>>>(
+        FutureBuilder<List<LeaderRow>>(
           future: _lbFuture,
           builder: (ctx, snap) {
             if (snap.hasError) {
@@ -1320,11 +1428,11 @@ class _GamePageState extends State<GamePage>
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: rows[i]['username'] == _username
+                        color: rows[i].username == _username
                             ? const Color(0xFF1E3A8A).withValues(alpha: 0.12)
                             : Theme.of(ctx).colorScheme.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(8),
-                        border: rows[i]['username'] == _username
+                        border: rows[i].username == _username
                             ? Border.all(color: const Color(0xFF1E3A8A))
                             : null,
                       ),
@@ -1337,14 +1445,14 @@ class _GamePageState extends State<GamePage>
                                   fontSize: 12)),
                         ),
                         Expanded(
-                          child: Text('${rows[i]['username']}',
+                          child: Text(rows[i].username,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600)),
                         ),
-                        Text('${rows[i]['highest_floor'] ?? 0}',
+                        Text('${rows[i].floor}',
                             style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 15,
@@ -1415,7 +1523,7 @@ class _GamePageState extends State<GamePage>
               decoration: const InputDecoration(
                   labelText: 'Star', border: OutlineInputBorder()),
               items: [
-                for (var s = 1; s <= 5; s++)
+                for (var s = 1; s <= 7; s++)
                   DropdownMenuItem(value: s, child: Text('$s★'))
               ],
               onChanged: (v) => setState(() => _hStarA = v ?? 3),
@@ -1437,6 +1545,9 @@ class _GamePageState extends State<GamePage>
                 : () {
                     final sn = _skName.text.trim();
                     final sv = double.tryParse(_skVal.text.trim());
+                    final a = int.tryParse(_ahAtk.text.trim());
+                    final hpv = int.tryParse(_ahHp.text.trim());
+                    final dv = int.tryParse(_ahDef.text.trim());
                     _run(
                       () => _game.adminAddHero(
                         _hStarA,
@@ -1445,6 +1556,9 @@ class _GamePageState extends State<GamePage>
                         skillKind: sn.isEmpty ? null : _skKindA,
                         skillValue:
                             (sn.isEmpty || sv == null) ? null : sv / 100,
+                        atk: a,
+                        hp: hpv,
+                        def: dv,
                       ),
                       'Hero added to pool',
                     );
@@ -1505,6 +1619,35 @@ class _GamePageState extends State<GamePage>
           ),
         ]),
         const Divider(height: 24),
+        Text('Custom base stats (optional - all three, absolute values)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+                controller: _ahAtk,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'ATK', border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _ahHp,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'HP', border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _ahDef,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'DEF', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 8),
+        const Text('Leave empty = default stats for that star.',
+            style: TextStyle(fontSize: 12)),
+        const Divider(height: 24),
         Text('Set hero art (picture URL)',
             style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),
@@ -1564,6 +1707,154 @@ class _GamePageState extends State<GamePage>
           'Battle background uses: exact floor -> boss room (floors 5,10..) '
           '-> default room. Set one default + one boss to start.',
           style: TextStyle(fontSize: 12),
+        ),
+      ]),
+      _card('Admin - give card (6★/7★ live here)', [
+        TextField(
+            controller: _gcUser,
+            decoration: const InputDecoration(
+                labelText: 'Username', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              initialValue: _gcStar,
+              decoration: const InputDecoration(
+                  labelText: 'Star', border: OutlineInputBorder()),
+              items: [
+                for (var s = 1; s <= 7; s++)
+                  DropdownMenuItem(value: s, child: Text('$s★'))
+              ],
+              onChanged: (v) => setState(() => _gcStar = v ?? 6),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+                controller: _gcName,
+                decoration: const InputDecoration(
+                    labelText: 'Hero name', border: OutlineInputBorder())),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminGiveCard(
+                      _gcUser.text, _gcStar, _gcName.text),
+                  'Card given'),
+          child: const Text('Give card'),
+        ),
+      ]),
+      _card('Admin - skins', [
+        Text('Create skin', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+                controller: _csHero,
+                decoration: const InputDecoration(
+                    labelText: 'Hero name', border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _csName,
+                decoration: const InputDecoration(
+                    labelText: 'Skin name', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              initialValue: _csStar,
+              decoration: const InputDecoration(
+                  labelText: 'Rarity override (0=keep)',
+                  border: OutlineInputBorder()),
+              items: [
+                for (var s = 0; s <= 7; s++)
+                  DropdownMenuItem(value: s, child: Text(s == 0 ? 'keep' : '$s★'))
+              ],
+              onChanged: (v) => setState(() => _csStar = v ?? 0),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+                controller: _csAtk,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: '+ATK', border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _csHp,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: '+HP', border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _csDef,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: '+DEF', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _csUrl,
+            decoration: const InputDecoration(
+                labelText: 'Skin picture URL (optional)',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminCreateSkin(
+                      _csHero.text,
+                      _csName.text,
+                      _csStar,
+                      int.tryParse(_csAtk.text.trim()) ?? 0,
+                      int.tryParse(_csHp.text.trim()) ?? 0,
+                      int.tryParse(_csDef.text.trim()) ?? 0,
+                      _csUrl.text),
+                  'Skin created'),
+          child: const Text('Create skin'),
+        ),
+        const Divider(height: 24),
+        Text('Grant skin (to every card of that hero the user owns)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _gsUser,
+            decoration: const InputDecoration(
+                labelText: 'Username', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+                controller: _gsHero,
+                decoration: const InputDecoration(
+                    labelText: 'Hero name', border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _gsSkin,
+                decoration: const InputDecoration(
+                    labelText: 'Skin name', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminGrantSkin(
+                      _gsUser.text, _gsHero.text, _gsSkin.text),
+                  'Skin granted'),
+          child: const Text('Grant skin'),
         ),
       ]),
     ]);

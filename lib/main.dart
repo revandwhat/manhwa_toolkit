@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pro_image_editor/pro_image_editor.dart';
 import 'login_page.dart';
 
@@ -1146,7 +1147,39 @@ class _RootPageState extends State<RootPage> {
                 IconButton(
                     icon: const Icon(Icons.key), onPressed: _askForKey)
               ]
-            : null,
+            : (_tab == 2
+                ? [
+                    IconButton(
+                      icon: const Icon(Icons.logout),
+                      onPressed: () async {
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Log out?'),
+                            content: const Text(
+                                'Your heroes, coins and progress stay safe on the server.'),
+                            actions: [
+                              TextButton(
+                                  onPressed: () =>
+                                      Navigator.pop(ctx, false),
+                                  child: const Text('Cancel')),
+                              FilledButton(
+                                  onPressed: () =>
+                                      Navigator.pop(ctx, true),
+                                  child: const Text('Log out')),
+                            ],
+                          ),
+                        );
+                        if (ok == true) {
+                          try {
+                            await Supabase
+                                .instance.client.auth.signOut();
+                          } catch (_) {}
+                        }
+                      },
+                    )
+                  ]
+                : null),
       ),
       body: IndexedStack(
         index: _tab,
