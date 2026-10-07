@@ -268,6 +268,15 @@ class GameService {
   Future<String?> avatarUrl() async =>
       (await _profile())['avatar_url'] as String?;
 
+  Future<List<Map<String, dynamic>>> leaderboard() async {
+    final rows = await _sb
+        .from('profiles')
+        .select('username, highest_floor')
+        .order('highest_floor', ascending: false)
+        .limit(50);
+    return (rows as List).cast<Map<String, dynamic>>();
+  }
+
   static String _today() {
     final d = DateTime.now();
     return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -385,8 +394,8 @@ class GameService {
   Future<void> adminAddHero(int star, String name,
       {String? skillName, String? skillKind, double? skillValue}) async {
     await _sb.rpc('add_hero', params: {
-      'star': star,
-      'name': name.trim(),
+      'p_star': star,
+      'p_name': name.trim(),
       'sname': skillName,
       'skind': skillKind,
       'svalue': skillValue,

@@ -31,6 +31,7 @@ class _GamePageState extends State<GamePage>
   bool _busy = false;
   bool _isAdmin = false;
   bool _loaded = false;
+  Future<List<Map<String, dynamic>>>? _lbFuture;
 
   int _dFloor = 1;
   final _floorCtrl = TextEditingController();
@@ -129,6 +130,7 @@ class _GamePageState extends State<GamePage>
       final team = await _game.loadTeam();
       final uname = await _game.username();
       final av = await _game.avatarUrl();
+      _lbFuture = _game.leaderboard();
       if (!mounted) return;
       setState(() {
         _coins = coins;
@@ -771,25 +773,20 @@ class _GamePageState extends State<GamePage>
           GestureDetector(
             onTap: _busy ? null : _changeAvatar,
             child: Stack(children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(12),
-                  image: _avatar != null
-                      ? DecorationImage(
-                          image: NetworkImage(_avatar!),
+              GlowBorder(
+                color: const Color(0xFF60A5FA),
+                radius: 12,
+                child: Container(
+                  width: 84,
+                  height: 84,
+                  color: Theme.of(context).colorScheme.surface,
+                  child: _avatar != null
+                      ? Image.network(_avatar!,
                           fit: BoxFit.contain,
-                        )
-                      : null,
+                          errorBuilder: (_, _, _) =>
+                              const Icon(Icons.person, size: 40))
+                      : const Icon(Icons.person, size: 40),
                 ),
-                alignment: Alignment.center,
-                child: _avatar == null
-                    ? const Icon(Icons.person, size: 32)
-                    : null,
               ),
               Positioned(
                 right: 0,
@@ -876,7 +873,11 @@ class _GamePageState extends State<GamePage>
 
   Widget _heroesTab() {
     final filtered = _filterRoster(_hSearch, _hStar);
-    final shown = filtered.take(_hPage * _hPageSz).toList();
+    final hPages =
+        filtered.isEmpty ? 1 : (filtered.length + _hPageSz - 1) ~/ _hPageSz;
+    final hPage = _hPage.clamp(1, hPages);
+    final shown =
+        filtered.skip((hPage - 1) * _hPageSz).take(_hPageSz).toList();
     return Column(children: [
       Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -1000,13 +1001,26 @@ class _GamePageState extends State<GamePage>
           },
         ),
       ),
-      if (filtered.length > shown.length)
+      if (hPages > 1)
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: OutlinedButton(
-            onPressed: () => setState(() => _hPage++),
-            child: Text(
-                'Show more (${filtered.length - shown.length} hidden)'),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                onPressed: hPage > 1
+                    ? () => setState(() => _hPage = hPage - 1)
+                    : null,
+                icon: const Icon(Icons.chevron_left),
+              ),
+              Text('Page $hPage / $hPages'),
+              IconButton(
+                onPressed: hPage < hPages
+                    ? () => setState(() => _hPage = hPage + 1)
+                    : null,
+                icon: const Icon(Icons.chevron_right),
+              ),
+            ],
           ),
         ),
       if (filtered.isEmpty)
@@ -1040,7 +1054,11 @@ class _GamePageState extends State<GamePage>
         return StatefulBuilder(
           builder: (ctx, sb) {
             final filtered = _filterRoster(_pSearch, _pStar);
-            final shown = filtered.take(_pPage * _pPageSz).toList();
+            final pPages =
+                filtered.isEmpty ? 1 : (filtered.length + _pPageSz - 1) ~/ _pPageSz;
+            final pPage = _pPage.clamp(1, pPages);
+            final shown =
+                filtered.skip((pPage - 1) * _pPageSz).take(_pPageSz).toList();
             return SizedBox(
               height: MediaQuery.of(ctx).size.height * 0.85,
               child: Column(children: [
@@ -1109,16 +1127,32 @@ class _GamePageState extends State<GamePage>
                     },
                   ),
                 ),
-                if (filtered.length > shown.length)
+                if (pPages > 1)
                   Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: OutlinedButton(
-                      onPressed: () {
-                        _pPage++;
-                        sb(() {});
-                      },
-                      child: Text(
-                          'Show more (${filtered.length - shown.length} hidden)'),
+                    padding: const EdgeInsets.all(4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          onPressed: pPage > 1
+                              ? () {
+                                  _pPage = pPage - 1;
+                                  sb(() {});
+                                }
+                              : null,
+                          icon: const Icon(Icons.chevron_left),
+                        ),
+                        Text('Page $pPage / $pPages'),
+                        IconButton(
+                          onPressed: pPage < pPages
+                              ? () {
+                                  _pPage = pPage + 1;
+                                  sb(() {});
+                                }
+                              : null,
+                          icon: const Icon(Icons.chevron_right),
+                        ),
+                      ],
                     ),
                   ),
                 Padding(
@@ -1148,6 +1182,20 @@ class _GamePageState extends State<GamePage>
       : n.startsWith('Bulwark')
           ? Icons.shield
           : Icons.groups;
+
+  String _ord(int n) {
+    if (n >= 11 && n <= 13) return '${n}th';
+    switch (n % 10) {
+      case 1:
+        return '${n}st';
+      case 2:
+        return '${n}nd';
+      case 3:
+        return '${n}rd';
+      default:
+        return '${n}th';
+    }
+  }
 
   Widget _dungeonTab() {
     final notes = GameService.comboNotes(_team);
@@ -1242,6 +1290,73 @@ class _GamePageState extends State<GamePage>
             'Waves hit random heroes - sustain (Vampiric) and armor '
             '(Bulwark stacks) keep a team of 5 alive.',
             style: TextStyle(fontSize: 12)),
+      ]),
+      _card('Leaderboard - highest floor', [
+        FutureBuilder<List<Map<String, dynamic>>>(
+          future: _lbFuture,
+          builder: (ctx, snap) {
+            if (snap.hasError) {
+              return const Text('Leaderboard unavailable right now.',
+                  style: TextStyle(fontSize: 13));
+            }
+            if (!snap.hasData) {
+              return const Center(
+                  child: Padding(
+                padding: EdgeInsets.all(8),
+                child: CircularProgressIndicator(),
+              ));
+            }
+            final rows = snap.data!;
+            if (rows.isEmpty) {
+              return const Text('No players yet.');
+            }
+            return Column(
+              children: [
+                for (var i = 0; i < rows.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: rows[i]['username'] == _username
+                            ? const Color(0xFF1E3A8A).withValues(alpha: 0.12)
+                            : Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                        border: rows[i]['username'] == _username
+                            ? Border.all(color: const Color(0xFF1E3A8A))
+                            : null,
+                      ),
+                      child: Row(children: [
+                        SizedBox(
+                          width: 44,
+                          child: Text(_ord(i + 1),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12)),
+                        ),
+                        Expanded(
+                          child: Text('${rows[i]['username']}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                        ),
+                        Text('${rows[i]['highest_floor'] ?? 0}',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                                color:
+                                    Theme.of(ctx).colorScheme.primary)),
+                      ]),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
       ]),
     ]);
   }

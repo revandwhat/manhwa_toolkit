@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pro_image_editor/pro_image_editor.dart';
 import 'login_page.dart';
 
@@ -15,9 +16,18 @@ import 'services/image_service.dart';
 import 'services/translate_service.dart';
 import 'services/typeset_service.dart';
 
+final themeModeNotifier = ValueNotifier<ThemeMode>(ThemeMode.light);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initSupabaseFromPrefs();
+  try {
+    final p = await SharedPreferences.getInstance();
+    themeModeNotifier.value =
+        (p.getString('theme_mode') ?? 'light') == 'dark'
+            ? ThemeMode.dark
+            : ThemeMode.light;
+  } catch (_) {}
   runApp(const ManhwaApp());
 }
 
@@ -26,27 +36,49 @@ class ManhwaApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'RunaTL',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E3A8A),
-          surface: Colors.white,
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: themeModeNotifier,
+      builder: (context, mode, _) => MaterialApp(
+        title: 'RunaTL',
+        debugShowCheckedModeBanner: false,
+        themeMode: mode,
+        theme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF1E3A8A),
+            surface: Colors.white,
+          ),
+          scaffoldBackgroundColor: Colors.white,
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFF1E3A8A),
+            foregroundColor: Colors.white,
+            centerTitle: true,
+          ),
+          cardTheme: const CardThemeData(
+            color: Colors.white,
+            surfaceTintColor: Colors.white,
+          ),
         ),
-        scaffoldBackgroundColor: Colors.white,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF1E3A8A),
-          foregroundColor: Colors.white,
-          centerTitle: true,
+        darkTheme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF1E3A8A),
+            brightness: Brightness.dark,
+            surface: const Color(0xFF12244A),
+          ),
+          scaffoldBackgroundColor: const Color(0xFF0B1B3A),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFF0F1E3C),
+            foregroundColor: Colors.white,
+            centerTitle: true,
+          ),
+          cardTheme: const CardThemeData(
+            color: Color(0xFF12244A),
+            surfaceTintColor: Colors.transparent,
+          ),
         ),
-        cardTheme: const CardThemeData(
-          color: Colors.white,
-          surfaceTintColor: Colors.white,
-        ),
+        home: const RootPage(),
       ),
-      home: const RootPage(),
     );
   }
 }
@@ -1141,10 +1173,65 @@ class _RootPageState extends State<RootPage> {
     );
   }
 
+  Future<void> _toggleTheme() async {
+    final next = themeModeNotifier.value == ThemeMode.dark
+        ? ThemeMode.light
+        : ThemeMode.dark;
+    themeModeNotifier.value = next;
+    final p = await SharedPreferences.getInstance();
+    await p.setString('theme_mode', next == ThemeMode.dark ? 'dark' : 'light');
+  }
+
+  Widget _runaHelpBanner() {
+    final dark = themeModeNotifier.value == ThemeMode.dark;
+    return GestureDetector(
+      onTap: _toggleTheme,
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: dark ? const Color(0xFF12244A) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFF60A5FA), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF60A5FA).withValues(alpha: 0.5),
+              blurRadius: 16,
+              spreadRadius: 1,
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            const Text(
+              'RunaHelp',
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF60A5FA),
+                shadows: [
+                  Shadow(color: Color(0xFF60A5FA), blurRadius: 16),
+                  Shadow(color: Color(0xFF60A5FA), blurRadius: 30),
+                ],
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'tap to switch to ${dark ? 'light' : 'dark'} mode',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildHome() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _runaHelpBanner(),
         _card('Welcome', [
           const Text(
             'Five tools in the Tools tab. Every tool has its own input and '
