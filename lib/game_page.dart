@@ -32,6 +32,7 @@ class _GamePageState extends State<GamePage>
   bool _isAdmin = false;
   bool _loaded = false;
   Future<List<LeaderRow>>? _lbFuture;
+  final Map<String, int> _domColors = {};
 
   int _dFloor = 1;
   final _floorCtrl = TextEditingController();
@@ -74,6 +75,9 @@ class _GamePageState extends State<GamePage>
   final _gsUser = TextEditingController();
   final _gsHero = TextEditingController();
   final _gsSkin = TextEditingController();
+  final _ahUlt = TextEditingController();
+  final _suName = TextEditingController();
+  final _suUlt = TextEditingController();
   final _skName = TextEditingController();
   final _skVal = TextEditingController();
   String _skKindA = 'damage';
@@ -84,7 +88,7 @@ class _GamePageState extends State<GamePage>
     3: Colors.blue,
     4: Colors.purple,
     5: Colors.amber,
-    6: Color(0xFF00E5FF),
+    6: Color(0xFFE53935),
     7: Color(0xFFFFD700),
   };
 
@@ -126,6 +130,9 @@ class _GamePageState extends State<GamePage>
     _gsUser.dispose();
     _gsHero.dispose();
     _gsSkin.dispose();
+    _ahUlt.dispose();
+    _suName.dispose();
+    _suUlt.dispose();
     super.dispose();
   }
 
@@ -180,6 +187,14 @@ class _GamePageState extends State<GamePage>
         }
         _loaded = true;
       });
+      for (final h in roster) {
+        if (h.star == 7 && h.picture != null &&
+            !_domColors.containsKey(h.id)) {
+          _game.dominantColor(h.picture!).then((v) {
+            if (mounted) setState(() => _domColors[h.id] = v);
+          });
+        }
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _loaded = true);
@@ -414,6 +429,23 @@ class _GamePageState extends State<GamePage>
             Text('Skill: ${h.skill.name}',
                 style: const TextStyle(fontWeight: FontWeight.w600)),
             Text(h.skill.desc, style: const TextStyle(fontSize: 13)),
+            if (h.ultText != null && h.ultText!.trim().isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E3A8A).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: const Color(0xFF1E3A8A).withValues(alpha: 0.3)),
+                ),
+                child: Text(
+                  h.ultText!,
+                  style: const TextStyle(fontSize: 13, height: 1.35),
+                ),
+              ),
+            ],
             const SizedBox(height: 8),
             Text(
                 'Sell value: ${h.sellValue} coins - wins give '
@@ -1025,7 +1057,9 @@ class _GamePageState extends State<GamePage>
             return InkWell(
               onTap: () => _heroSheet(_roster.indexOf(h)),
               child: GlowBorder(
-                color: c,
+                color: h.star == 7 && h.picture != null
+                    ? Color(_domColors[h.id] ?? 0xFFFFD700)
+                    : c,
                 child: Container(
                   margin: const EdgeInsets.all(2),
                   clipBehavior: Clip.antiAlias,
@@ -1563,6 +1597,9 @@ class _GamePageState extends State<GamePage>
                         atk: a,
                         hp: hpv,
                         def: dv,
+                        ultText: _ahUlt.text.trim().isEmpty
+                            ? null
+                            : _ahUlt.text.trim(),
                       ),
                       'Hero added to pool',
                     );
@@ -1622,6 +1659,15 @@ class _GamePageState extends State<GamePage>
                     border: OutlineInputBorder())),
           ),
         ]),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _ahUlt,
+            maxLines: 5,
+            decoration: const InputDecoration(
+                labelText:
+                    'Ultimate description (optional - shown on the card)',
+                hintText: 'E.g. Summons a sacred garden...',
+                border: OutlineInputBorder())),
         const Divider(height: 24),
         Text('Custom base stats (optional - all three, absolute values)',
             style: Theme.of(context).textTheme.labelLarge),
@@ -1681,6 +1727,102 @@ class _GamePageState extends State<GamePage>
           style: TextStyle(fontSize: 12),
         ),
         const Divider(height: 24),
+        Text('Set ultimate (existing hero - updates pool AND owned cards)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suName,
+            decoration: const InputDecoration(
+                labelText: 'Hero name', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suUlt,
+            maxLines: 5,
+            decoration: const InputDecoration(
+                labelText: 'Ultimate description',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
+                  'Ultimate saved'),
+          child: const Text('Save ultimate'),
+        ),
+        const Divider(height: 24),
+        Text('Set ultimate (existing hero - updates pool AND owned cards)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suName,
+            decoration: const InputDecoration(
+                labelText: 'Hero name', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suUlt,
+            maxLines: 5,
+            decoration: const InputDecoration(
+                labelText: 'Ultimate description',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
+                  'Ultimate saved'),
+          child: const Text('Save ultimate'),
+        ),
+        const Divider(height: 24),
+        Text('Set ultimate (existing hero - updates pool AND owned cards)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suName,
+            decoration: const InputDecoration(
+                labelText: 'Hero name', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suUlt,
+            maxLines: 5,
+            decoration: const InputDecoration(
+                labelText: 'Ultimate description',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
+                  'Ultimate saved'),
+          child: const Text('Save ultimate'),
+        ),
+                Text('Set ultimate (existing hero - updates pool AND owned cards)',
+            style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suName,
+            decoration: const InputDecoration(
+                labelText: 'Hero name', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _suUlt,
+            maxLines: 5,
+            decoration: const InputDecoration(
+                labelText: 'Ultimate description',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _busy
+              ? null
+              : () => _run(
+                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
+                  'Ultimate saved'),
+          child: const Text('Save ultimate'),
+        ),
+        const Divider(height: 24),
+const Divider(height: 24),
         Text('Dungeon room art',
             style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),

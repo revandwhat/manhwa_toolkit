@@ -218,7 +218,12 @@ class _BattlePageState extends State<BattlePage> {
                         Wrap(
                           children: [
                             for (final f in r.heroes)
-                              _card(f, _v[f.id]!, _heroGlow, true),
+                              _card(f, _v[f.id]!,
+                                f.star == 6
+                                    ? const Color(0xFFE53935)
+                                    : (f.star == 7
+                                        ? Colors.amber
+                                        : _heroGlow), true),
                           ],
                         ),
                       ],

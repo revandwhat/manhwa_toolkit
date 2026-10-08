@@ -3,7 +3,9 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show compute;
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
+import 'package:flutter/material.dart' show Color, HSVColor;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -89,6 +91,7 @@ class Hero {
     this.baseDef,
     this.skin,
     this.ownedSkins = const [],
+    this.ultText,
   });
 
   final String id;
@@ -105,6 +108,7 @@ class Hero {
   final int? baseDef;
   final SkinInfo? skin;
   final List<SkinInfo> ownedSkins;
+  final String? ultText;
 
   static const maxLevel = 30;
   static const _basePower = {
@@ -136,9 +140,10 @@ class Hero {
     final eff = (skin != null && skin.starOverride > 0)
         ? skin.starOverride
         : (j['star'] as num).toInt();
+    final origName = j['name'] as String;
     return Hero(
       id: j['id'] as String,
-      name: j['name'] as String,
+      name: skin?.name ?? origName,
       star: eff,
       level: (j['level'] as num?)?.toInt() ?? 1,
       skill: Skill(
@@ -147,7 +152,7 @@ class Hero {
         value: ((j['skill_value'] ?? 0) as num).toDouble(),
       ),
       locked: (j['locked'] as bool?) ?? false,
-      picture: skin?.picture ?? art?[j['name'] as String],
+      picture: skin?.picture ?? art?[origName],
       exp: (j['exp'] as num?)?.toInt() ?? 0,
       bonus: (j['bonus'] as num?)?.toInt() ?? 0,
       baseAtk: (j['base_atk'] as num?)?.toInt(),
@@ -155,6 +160,7 @@ class Hero {
       baseDef: (j['base_def'] as num?)?.toInt(),
       skin: skin,
       ownedSkins: owned,
+      ultText: j['ult_text'] as String?,
     );
   }
 }
@@ -240,6 +246,29 @@ class LeaderRow {
   LeaderRow({required this.username, required this.floor});
   final String username;
   final int floor;
+}
+
+int _avgColor(Uint8List bytes) {
+  final im = img.decodeImage(bytes);
+  if (im == null) return 0xFFFFD700;
+  final small = img.copyResize(im, width: 8, height: 8);
+  var r = 0, g = 0, b = 0;
+  for (var y = 0; y < small.height; y++) {
+    for (var x = 0; x < small.width; x++) {
+      final p = small.getPixel(x, y);
+      r += p.r.toInt();
+      g += p.g.toInt();
+      b += p.b.toInt();
+    }
+  }
+  final n = small.width * small.height;
+  final base = Color.fromARGB(255, r ~/ n, g ~/ n, b ~/ n);
+  final hsv = HSVColor.fromColor(base);
+  return hsv
+      .withSaturation(hsv.saturation < 0.45 ? 0.45 : hsv.saturation)
+      .withValue(hsv.value < 0.55 ? 0.55 : hsv.value)
+      .toColor()
+      .toARGB32();
 }
 
 Uint8List _toPng(Uint8List bytes) {
@@ -485,7 +514,8 @@ class GameService {
       double? skillValue,
       int? atk,
       int? hp,
-      int? def}) async {
+      int? def,
+      String? ultText}) async {
     await _sb.rpc('add_hero', params: {
       'p_star': star,
       'p_name': name.trim(),
@@ -495,16 +525,40 @@ class GameService {
       'p_atk': atk,
       'p_hp': hp,
       'p_def': def,
+      'p_ult': ultText,
     });
   }
 
   Future<void> adminRemoveHero(String name) async {
-    await _sb.rpc('remove_hero', params: {'name': name.trim()});
+    await _sb.rpc('remove_hero', params: {'p_name': name.trim()});
   }
 
   Future<void> adminSetArt(String name, String url) async {
     await _sb.rpc('set_hero_art',
         params: {'hero_name': name.trim(), 'url': url.trim()});
+  }
+
+  Future<void> adminSetUlt(String name, String ult) async {
+    await _sb.rpc('set_hero_ult',
+        params: {'p_name': name.trim(), 'p_ult': ult});
+  }
+
+  final _domCache = <String, int>{};
+
+  /// Average color of an image (vivid-boosted) - used for 7-star borders.
+  Future<int> dominantColor(String url) async {
+    final cached = _domCache[url];
+    if (cached != null) return cached;
+    try {
+      final res = await http
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 20));
+      final avg = await compute(_avgColor, res.bodyBytes);
+      _domCache[url] = avg;
+      return avg;
+    } catch (_) {
+      return 0xFFFFD700;
+    }
   }
 
   Future<void> adminSetRoom(String key, String url) async {
