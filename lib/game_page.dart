@@ -152,6 +152,7 @@ class _GamePageState extends State<GamePage>
   }
 
   Future<void> _refresh() async {
+    _lbFuture = _game.leaderboard();
     try {
       final coins = await _game.coins();
       final roster = await _game.roster();
@@ -162,7 +163,6 @@ class _GamePageState extends State<GamePage>
       final team = await _game.loadTeam();
       final uname = await _game.username();
       final av = await _game.avatarUrl();
-      _lbFuture = _game.leaderboard();
       if (!mounted) return;
       setState(() {
         _coins = coins;
@@ -180,8 +180,12 @@ class _GamePageState extends State<GamePage>
         }
         _loaded = true;
       });
-    } catch (_) {
-      if (mounted) setState(() => _loaded = true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loaded = true);
+        _snack('Sync problem: '
+            '${e.toString().replaceFirst('Exception: ', '')}');
+      }
     }
   }
 
