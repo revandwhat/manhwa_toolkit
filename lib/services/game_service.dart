@@ -374,17 +374,20 @@ class GameService {
     final catalog = <String, SkinInfo>{};
     final skinRows = await _sb.from('card_skins').select();
     for (final r in skinRows) {
-      final s = SkinInfo.fromRow(r);
-      catalog[s.id] = s;
+      final sk = SkinInfo.fromRow(r);
+      catalog[sk.id] = sk;
     }
-    final grants = await _sb
-        .from('card_skin_grants')
-        .select()
-        .inFilter('card_id', cardIds);
+    // Fetch all grants (small table) and match client-side - avoids
+    // giant in.(uuid,...) URLs that the API gateway rejects with 400.
+    final want = cardIds.toSet();
+    final grants = await _sb.from('card_skin_grants').select();
     for (final g in grants) {
-      final s = catalog[g['skin_id'] as String];
-      if (s == null) continue;
-      byCard.putIfAbsent(g['card_id'] as String, () => []).add(s);
+      final row = g;
+      final cid = row['card_id'] as String?;
+      if (cid == null || !want.contains(cid)) continue;
+      final sk = catalog[row['skin_id'] as String];
+      if (sk == null) continue;
+      byCard.putIfAbsent(cid, () => []).add(sk);
     }
     return byCard;
   }
