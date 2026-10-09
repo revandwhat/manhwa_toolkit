@@ -92,6 +92,7 @@ class Hero {
     this.skin,
     this.ownedSkins = const [],
     this.ultText,
+    required this.baseName,
   });
 
   final String id;
@@ -109,6 +110,7 @@ class Hero {
   final SkinInfo? skin;
   final List<SkinInfo> ownedSkins;
   final String? ultText;
+  final String baseName;
 
   static const maxLevel = 30;
   static const _basePower = {
@@ -144,6 +146,7 @@ class Hero {
     return Hero(
       id: j['id'] as String,
       name: skin?.name ?? origName,
+      baseName: origName,
       star: eff,
       level: (j['level'] as num?)?.toInt() ?? 1,
       skill: Skill(
@@ -230,6 +233,7 @@ class BattleResult {
     required this.events,
     required this.comboNotes,
     this.roomPicture,
+    this.ults = const [],
   });
 
   final bool win;
@@ -240,6 +244,7 @@ class BattleResult {
   final List<RoundEvent> events;
   final List<String> comboNotes;
   final String? roomPicture;
+  final List<UltEvent> ults;
 }
 
 class LeaderRow {
@@ -276,6 +281,56 @@ Uint8List _toPng(Uint8List bytes) {
   if (im == null) throw Exception('Bad image');
   final small = img.copyResize(im, width: 256);
   return Uint8List.fromList(img.encodePng(small));
+}
+
+class UltConfig {
+  UltConfig(
+      {required this.dmgMul,
+      required this.aoe,
+      required this.fireRound,
+      this.assetUrl});
+
+  final double dmgMul; // 3.0 = 300% of ATK
+  final bool aoe; // all enemies, or lowest-HP
+  final int fireRound;
+  final String? assetUrl; // PNG / GIF (GIF animates by itself)
+
+  factory UltConfig.fromJson(Map<String, dynamic> j) => UltConfig(
+        dmgMul: (j['dmg_mul'] as num?)?.toDouble() ?? 3.0,
+        aoe: (j['aoe'] as bool?) ?? false,
+        fireRound: (j['fire_round'] as num?)?.toInt() ?? 2,
+        assetUrl: j['asset_url'] as String?,
+      );
+}
+
+class UltHit {
+  const UltHit(
+      {required this.targetId,
+      required this.targetName,
+      required this.dmg,
+      required this.ko,
+      required this.hpAfter});
+
+  final String targetId;
+  final String targetName;
+  final int dmg;
+  final bool ko;
+  final int hpAfter;
+}
+
+class UltEvent {
+  const UltEvent(
+      {required this.round,
+      required this.heroId,
+      required this.heroName,
+      this.assetUrl,
+      required this.targets});
+
+  final int round;
+  final String heroId;
+  final String heroName;
+  final String? assetUrl;
+  final List<UltHit> targets;
 }
 
 class GameService {
@@ -386,6 +441,19 @@ class GameService {
         .toList();
   }
 
+  Future<Map<String, UltConfig>> ultMap() async {
+    final rows = await _sb.from('hero_pool').select('name, ult_config');
+    final out = <String, UltConfig>{};
+    for (final r in rows) {
+      final row = r;
+      final cfg = row['ult_config'];
+      if (cfg == null) continue;
+      out[row['name'] as String] =
+          UltConfig.fromJson(cfg as Map<String, dynamic>);
+    }
+    return out;
+  }
+
   Future<Map<String, String>> roomArtMap() async {
     final rows = await _sb.from('dungeon_rooms').select();
     return {for (final r in rows) r['key'] as String: r['picture'] as String};
@@ -433,9 +501,15 @@ class GameService {
     final cards = (rows as List).cast<Map<String, dynamic>>();
     final skins =
         await _skinsByCard([for (final c in cards) c['id'] as String]);
-    return cards
+    final list = cards
         .map((c) => Hero.fromRow(c, art: art, skinsByCard: skins))
         .toList();
+    list.sort((a, b) {
+      final c = b.star.compareTo(a.star);
+      if (c != 0) return c;
+      return b.level.compareTo(a.level);
+    });
+    return list;
   }
 
   Future<int> claimDaily() async {
@@ -561,6 +635,22 @@ class GameService {
     }
   }
 
+  Future<void> adminSetUltConfig(String name,
+      {required double dmgMul,
+      required bool aoe,
+      required int fireRound,
+      String? assetUrl}) async {
+    await _sb.rpc('set_hero_ult_config', params: {
+      'p_name': name.trim(),
+      'p_cfg': {
+        'dmg_mul': dmgMul,
+        'aoe': aoe,
+        'fire_round': fireRound,
+        'asset_url': assetUrl,
+      },
+    });
+  }
+
   Future<void> adminSetRoom(String key, String url) async {
     await _sb.rpc('set_room_art',
         params: {'room_key': key.trim(), 'url': url.trim()});
@@ -630,6 +720,7 @@ class GameService {
     final f = requestedFloor.clamp(1, cleared + 1);
     final (count, ePower) = waveInfo(f);
     final rooms = await roomArtMap();
+    final ultCfg = await ultMap();
     final room = rooms['$f'] ??
         (f % 5 == 0 ? rooms['boss'] : null) ??
         rooms['default'];
@@ -686,9 +777,60 @@ class GameService {
     }
 
     final events = <RoundEvent>[];
+    final ults = <UltEvent>[];
+    final fired = <String>{};
     var round = 1;
     while (round <= 40) {
       final hits = <HitEvent>[];
+
+      // ultimates fire at the start of their round, pierce DEF
+      for (var i = 0; i < t.length; i++) {
+        if (!hAlive[i]) continue;
+        final cfg = ultCfg[t[i].baseName];
+        if (cfg == null || fired.contains(t[i].id) || cfg.fireRound != round) {
+          continue;
+        }
+        fired.add(t[i].id);
+        final targets = <UltHit>[];
+        void hit(int j) {
+          if (!eAlive[j]) return;
+          final d = (t[i].atk *
+                  cfg.dmgMul *
+                  (0.9 + _rng.nextDouble() * 0.2))
+              .round();
+          eHp[j] -= d;
+          final ko = eHp[j] <= 0;
+          if (ko) eAlive[j] = false;
+          targets.add(UltHit(
+            targetId: eF[j].id,
+            targetName: eF[j].name,
+            dmg: d,
+            ko: ko,
+            hpAfter: max(0, eHp[j]),
+          ));
+        }
+
+        if (cfg.aoe) {
+          for (var j = 0; j < eF.length; j++) {
+            hit(j);
+          }
+        } else {
+          var ti = -1;
+          for (var j = 0; j < eF.length; j++) {
+            if (eAlive[j] && (ti == -1 || eHp[j] < eHp[ti])) ti = j;
+          }
+          if (ti != -1) hit(ti);
+        }
+        if (targets.isNotEmpty) {
+          ults.add(UltEvent(
+            round: round,
+            heroId: hF[i].id,
+            heroName: hF[i].name,
+            assetUrl: cfg.assetUrl,
+            targets: targets,
+          ));
+        }
+      }
 
       for (var i = 0; i < t.length; i++) {
         if (!hAlive[i] || !eAlive.any((x) => x)) continue;
@@ -778,6 +920,7 @@ class GameService {
       events: events,
       comboNotes: notes,
       roomPicture: room,
+      ults: ults,
     );
   }
 }

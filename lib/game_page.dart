@@ -78,6 +78,10 @@ class _GamePageState extends State<GamePage>
   final _ahUlt = TextEditingController();
   final _suName = TextEditingController();
   final _suUlt = TextEditingController();
+  final _ucDmg = TextEditingController(text: '300');
+  final _ucRound = TextEditingController(text: '2');
+  final _ucUrl = TextEditingController();
+  bool _ucAoe = false;
   final _skName = TextEditingController();
   final _skVal = TextEditingController();
   String _skKindA = 'damage';
@@ -133,6 +137,9 @@ class _GamePageState extends State<GamePage>
     _ahUlt.dispose();
     _suName.dispose();
     _suUlt.dispose();
+    _ucDmg.dispose();
+    _ucRound.dispose();
+    _ucUrl.dispose();
     super.dispose();
   }
 
@@ -1750,79 +1757,65 @@ class _GamePageState extends State<GamePage>
                   'Ultimate saved'),
           child: const Text('Save ultimate'),
         ),
-        const Divider(height: 24),
-        Text('Set ultimate (existing hero - updates pool AND owned cards)',
+        const SizedBox(height: 12),
+        Text('Ultimate config - makes the ult REAL in battle',
             style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),
-        TextField(
-            controller: _suName,
-            decoration: const InputDecoration(
-                labelText: 'Hero name', border: OutlineInputBorder())),
+        Row(children: [
+          Expanded(
+            child: TextField(
+                controller: _ucDmg,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'Damage % of ATK (300 = 3x)',
+                    border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _ucRound,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'Fires on round',
+                    border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Hits ALL enemies (off = lowest-HP target)'),
+          value: _ucAoe,
+          onChanged: (v) => setState(() => _ucAoe = v),
+        ),
         const SizedBox(height: 8),
         TextField(
-            controller: _suUlt,
-            maxLines: 5,
+            controller: _ucUrl,
             decoration: const InputDecoration(
-                labelText: 'Ultimate description',
+                labelText: 'Projectile image URL (PNG or GIF - GIF animates)',
+                hintText: 'https://.../hollow-purple.gif',
                 border: OutlineInputBorder())),
         const SizedBox(height: 8),
         FilledButton(
           onPressed: _busy
               ? null
-              : () => _run(
-                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
-                  'Ultimate saved'),
-          child: const Text('Save ultimate'),
+              : () {
+                  final dm =
+                      (double.tryParse(_ucDmg.text.trim()) ?? 300) / 100;
+                  _run(
+                    () => _game.adminSetUltConfig(
+                      _suName.text,
+                      dmgMul: dm,
+                      aoe: _ucAoe,
+                      fireRound:
+                          int.tryParse(_ucRound.text.trim()) ?? 2,
+                      assetUrl: _ucUrl.text.trim().isEmpty
+                          ? null
+                          : _ucUrl.text.trim(),
+                    ),
+                    'Ultimate config saved',
+                  );
+                },
+          child: const Text('Save config (makes it real)'),
         ),
         const Divider(height: 24),
-        Text('Set ultimate (existing hero - updates pool AND owned cards)',
-            style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 8),
-        TextField(
-            controller: _suName,
-            decoration: const InputDecoration(
-                labelText: 'Hero name', border: OutlineInputBorder())),
-        const SizedBox(height: 8),
-        TextField(
-            controller: _suUlt,
-            maxLines: 5,
-            decoration: const InputDecoration(
-                labelText: 'Ultimate description',
-                border: OutlineInputBorder())),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed: _busy
-              ? null
-              : () => _run(
-                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
-                  'Ultimate saved'),
-          child: const Text('Save ultimate'),
-        ),
-                Text('Set ultimate (existing hero - updates pool AND owned cards)',
-            style: Theme.of(context).textTheme.labelLarge),
-        const SizedBox(height: 8),
-        TextField(
-            controller: _suName,
-            decoration: const InputDecoration(
-                labelText: 'Hero name', border: OutlineInputBorder())),
-        const SizedBox(height: 8),
-        TextField(
-            controller: _suUlt,
-            maxLines: 5,
-            decoration: const InputDecoration(
-                labelText: 'Ultimate description',
-                border: OutlineInputBorder())),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed: _busy
-              ? null
-              : () => _run(
-                  () => _game.adminSetUlt(_suName.text, _suUlt.text.trim()),
-                  'Ultimate saved'),
-          child: const Text('Save ultimate'),
-        ),
-        const Divider(height: 24),
-const Divider(height: 24),
         Text('Dungeon room art',
             style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),
