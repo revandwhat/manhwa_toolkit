@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart' hide Hero;
 
 import 'services/game_service.dart';
+import 'ult_page.dart';
 import 'widgets/glow_border.dart';
 
 class _Fv {
@@ -34,9 +35,6 @@ class _BattlePageState extends State<BattlePage> {
   int _round = 0;
   int _speed = 1;
   bool _done = false;
-  UltEvent? _ult;
-  bool _ultFly = false;
-  bool _ultHit = false;
   Timer? _closeTimer;
   int _closeLeft = 5;
 
@@ -69,9 +67,12 @@ class _BattlePageState extends State<BattlePage> {
     await _wait(500);
     for (final e in widget.result.events) {
       if (mounted) setState(() => _round = e.round);
+
+      // ultimates play at full length, unaffected by skip speed
       for (final u in widget.result.ults) {
         if (u.round == e.round) await _playUlt(u);
       }
+
       for (final h in e.hits) {
         final a = _v[h.attackerId]!;
         final t = _v[h.targetId]!;
@@ -121,150 +122,44 @@ class _BattlePageState extends State<BattlePage> {
     }
   }
 
-  Color _noteBg(String n) => n.startsWith('Synergy')
-      ? const Color(0xFF1E3A8A)
-      : n.startsWith('Bulwark')
-          ? const Color(0xFF0F2A5C)
-          : const Color(0xFFB45309);
-
   Future<void> _playUlt(UltEvent u) async {
     if (!mounted) return;
+    await Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        transitionDuration: const Duration(milliseconds: 350),
+        reverseTransitionDuration: const Duration(milliseconds: 350),
+        pageBuilder: (_, _, _) => UltCinematicPage(event: u),
+        transitionsBuilder: (_, anim, _, child) =>
+            FadeTransition(opacity: anim, child: child),
+      ),
+    );
+    if (!mounted) return;
     setState(() {
-      _ult = u;
-      _ultFly = false;
-      _ultHit = false;
+      for (final t in u.targets) {
+        final v = _v[t.targetId];
+        if (v == null) continue;
+        v.hp = t.hpAfter;
+        v.shake = true;
+        v.popV++;
+        v.pop = t.ko ? 'KO!' : '-${t.dmg}';
+        if (t.ko) v.alive = false;
+      }
     });
-    await _wait(400);
-    if (mounted) setState(() => _ultFly = true);
     await _wait(700);
-    if (mounted) {
-      setState(() {
-        _ultHit = true;
-        for (final t in u.targets) {
-          final v = _v[t.targetId];
-          if (v == null) continue;
-          v.hp = t.hpAfter;
-          v.shake = true;
-          v.popV++;
-          v.pop = t.ko ? 'KO!' : '-${t.dmg}';
-          if (t.ko) v.alive = false;
-        }
-      });
-    }
-    await _wait(900);
     if (mounted) {
       setState(() {
         for (final t in u.targets) {
           _v[t.targetId]?.shake = false;
         }
-        _ult = null;
-        _ultFly = false;
-        _ultHit = false;
       });
     }
-    await _wait(250);
   }
 
-  Widget _ultOverlay(UltEvent u) {
-    return LayoutBuilder(builder: (ctx, cons) {
-      final W = cons.maxWidth;
-      final H = cons.maxHeight;
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          Container(
-            color: const Color(0xFF7B2FF7)
-                .withValues(alpha: _ultHit ? 0.10 : 0.30),
-          ),
-          Positioned(
-            top: 10,
-            left: 0,
-            right: 0,
-            child: Text(
-              '${u.heroName} - ULTIMATE',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Color(0xFFD1B3FF),
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                shadows: [
-                  Shadow(color: Color(0xFF7B2FF7), blurRadius: 20),
-                ],
-              ),
-            ),
-          ),
-          if (!_ultHit)
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 700),
-              curve: Curves.easeInCubic,
-              left: _ultFly ? W / 2 - 45 : -90,
-              top: _ultFly ? H * 0.24 : H * 0.62,
-              child: _orb(u.assetUrl, 90),
-            ),
-          if (_ultHit)
-            for (final sz in const [160.0, 260.0, 380.0])
-              Center(
-                child: TweenAnimationBuilder<double>(
-                  tween: Tween(begin: 0, end: 1),
-                  duration: const Duration(milliseconds: 800),
-                  builder: (context, t, _) => Opacity(
-                    opacity: (1 - t).clamp(0.0, 1.0),
-                    child: Container(
-                      width: sz * (0.3 + 0.7 * t),
-                      height: sz * (0.3 + 0.7 * t),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                            color: const Color(0xFFB388FF),
-                            width: 4 * (1 - t) + 1),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-        ],
-      );
-    });
-  }
-
-  Widget _orb(String? url, double size) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-              color: const Color(0xFF7B2FF7),
-              blurRadius: 40,
-              spreadRadius: 14),
-          BoxShadow(
-              color: Colors.deepPurpleAccent,
-              blurRadius: 80,
-              spreadRadius: 28),
-        ],
-      ),
-      child: (url != null && url.isNotEmpty)
-          ? ClipOval(
-              child: Image.network(url,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) => _plainOrb()))
-          : _plainOrb(),
-    );
-  }
-
-  Widget _plainOrb() {
-    return const DecoratedBox(
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(colors: [
-          Colors.white,
-          Color(0xFFB388FF),
-          Color(0xFF7B2FF7),
-          Color(0xFF311B92),
-        ]),
-      ),
-    );
+  Color _heroColor(FighterInfo f) {
+    if (f.star == 6) return const Color(0xFFE53935);
+    if (f.star == 7) return Colors.amber;
+    return _heroGlow;
   }
 
   @override
@@ -288,10 +183,6 @@ class _BattlePageState extends State<BattlePage> {
           else
             Container(color: const Color(0xFF0B1B3A)),
           Container(color: Colors.black.withValues(alpha: 0.45)),
-          if (_ult != null)
-            Positioned.fill(
-              child: IgnorePointer(child: _ultOverlay(_ult!)),
-            ),
           SafeArea(
             child: Column(
               children: [
@@ -309,7 +200,11 @@ class _BattlePageState extends State<BattlePage> {
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 10, vertical: 2),
                               decoration: BoxDecoration(
-                                color: _noteBg(n),
+                                color: n.startsWith('Synergy')
+                                    ? const Color(0xFF1E3A8A)
+                                    : n.startsWith('Bulwark')
+                                        ? const Color(0xFF0F2A5C)
+                                        : const Color(0xFFB45309),
                                 borderRadius: BorderRadius.circular(99),
                               ),
                               child: Center(
@@ -368,12 +263,7 @@ class _BattlePageState extends State<BattlePage> {
                         Wrap(
                           children: [
                             for (final f in r.heroes)
-                              _card(f, _v[f.id]!,
-                                f.star == 6
-                                    ? const Color(0xFFE53935)
-                                    : (f.star == 7
-                                        ? Colors.amber
-                                        : _heroGlow), true),
+                              _card(f, _v[f.id]!, _heroColor(f), true),
                           ],
                         ),
                       ],
@@ -384,8 +274,8 @@ class _BattlePageState extends State<BattlePage> {
                   Padding(
                     padding: const EdgeInsets.all(10),
                     child: OutlinedButton(
-                      onPressed: () => setState(() => _speed =
-                          _speed == 1 ? 2 : (_speed == 2 ? 4 : 0)),
+                      onPressed: () => setState(() =>
+                          _speed = _speed == 1 ? 2 : (_speed == 2 ? 4 : 0)),
                       style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.white),
                       child:
@@ -395,14 +285,26 @@ class _BattlePageState extends State<BattlePage> {
                 else
                   Padding(
                     padding: const EdgeInsets.all(10),
-                    child: FilledButton(
-                      onPressed: () {
-                        _closeTimer?.cancel();
-                        Navigator.pop(context);
-                      },
-                      child: Text(r.win
-                          ? 'Victory! +${r.coins} coins - $_closeLeft'
-                          : 'Defeated... +${r.coins} coins'),
+                    child: Column(
+                      children: [
+                        if (r.ults.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 6),
+                            child: Text(
+                                'No ultimates fired - check the config fire round',
+                                style: TextStyle(
+                                    color: Colors.white54, fontSize: 11)),
+                          ),
+                        FilledButton(
+                          onPressed: () {
+                            _closeTimer?.cancel();
+                            Navigator.pop(context);
+                          },
+                          child: Text(r.win
+                              ? 'Victory! +${r.coins} coins - $_closeLeft'
+                              : 'Defeated... +${r.coins} coins'),
+                        ),
+                      ],
                     ),
                   ),
               ],
