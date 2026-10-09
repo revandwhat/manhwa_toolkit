@@ -68,7 +68,6 @@ class _BattlePageState extends State<BattlePage> {
     for (final e in widget.result.events) {
       if (mounted) setState(() => _round = e.round);
 
-      // ultimates play at full length, unaffected by skip speed
       for (final u in widget.result.ults) {
         if (u.round == e.round) await _playUlt(u);
       }
@@ -83,7 +82,11 @@ class _BattlePageState extends State<BattlePage> {
             t.hp = h.targetHpAfter;
             t.shake = true;
             t.popV++;
-            t.pop = h.crit ? 'CRIT -${h.dmg}!' : '-${h.dmg}';
+            t.pop = h.crit
+                ? 'CRIT -${h.dmg}!'
+                : (h.attackerId == 'PLASMA'
+                    ? 'PLASMA -${h.dmg}'
+                    : '-${h.dmg}');
             if (h.heal > 0) {
               a.healV++;
               a.healPop = '+${h.heal}';
@@ -285,26 +288,14 @@ class _BattlePageState extends State<BattlePage> {
                 else
                   Padding(
                     padding: const EdgeInsets.all(10),
-                    child: Column(
-                      children: [
-                        if (r.ults.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 6),
-                            child: Text(
-                                'No ultimates fired - check the config fire round',
-                                style: TextStyle(
-                                    color: Colors.white54, fontSize: 11)),
-                          ),
-                        FilledButton(
-                          onPressed: () {
-                            _closeTimer?.cancel();
-                            Navigator.pop(context);
-                          },
-                          child: Text(r.win
-                              ? 'Victory! +${r.coins} coins - $_closeLeft'
-                              : 'Defeated... +${r.coins} coins'),
-                        ),
-                      ],
+                    child: FilledButton(
+                      onPressed: () {
+                        _closeTimer?.cancel();
+                        Navigator.pop(context);
+                      },
+                      child: Text(r.win
+                          ? 'Victory! +${r.coins} coins - $_closeLeft'
+                          : 'Defeated... +${r.coins} coins'),
                     ),
                   ),
               ],
@@ -312,6 +303,45 @@ class _BattlePageState extends State<BattlePage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _chargeBar(FighterInfo f) {
+    if (f.star <= 0) return const SizedBox.shrink();
+    final c = widget.result.chargeMap[f.id];
+    if (c == null) return const SizedBox.shrink();
+    final frac = (c / widget.result.chargeCost).clamp(0.0, 1.0);
+    final ready = frac >= 1.0;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Stack(children: [
+        Container(
+          height: 5,
+          decoration: BoxDecoration(
+            color: Colors.white12,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        FractionallySizedBox(
+          widthFactor: frac,
+          child: Container(
+            height: 5,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(2),
+              gradient: LinearGradient(colors: [
+                Colors.blueAccent,
+                Colors.redAccent,
+                if (ready) const Color(0xFFB388FF),
+              ]),
+              boxShadow: ready
+                  ? const [
+                      BoxShadow(color: Color(0xFFB388FF), blurRadius: 8),
+                    ]
+                  : null,
+            ),
+          ),
+        ),
+      ]),
     );
   }
 
@@ -328,7 +358,7 @@ class _BattlePageState extends State<BattlePage> {
           radius: 8,
           child: Container(
             width: 96,
-            height: 128,
+            height: 132,
             clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
               color: const Color(0xFF0F1E3C),
@@ -414,6 +444,8 @@ class _BattlePageState extends State<BattlePage> {
                           ),
                         ),
                         const SizedBox(height: 2),
+                        _chargeBar(f),
+                        const SizedBox(height: 2),
                         Stack(children: [
                           Text('${f.power} atk',
                               style: TextStyle(
@@ -436,16 +468,18 @@ class _BattlePageState extends State<BattlePage> {
                                       v.pop!,
                                       textAlign: TextAlign.center,
                                       style: TextStyle(
-                                        fontSize: 15,
+                                        fontSize: 14,
                                         fontWeight: FontWeight.bold,
-                                        color:
-                                            (v.pop ?? '').startsWith('CRIT')
-                                                ? Colors.orange
-                                                : ((v.pop ?? '') == 'KO!'
-                                                    ? Colors.white
+                                        color: (v.pop ?? '').startsWith('CRIT')
+                                            ? Colors.orange
+                                            : ((v.pop ?? '') == 'KO!'
+                                                ? Colors.white
+                                                : ((v.pop ?? '')
+                                                        .startsWith('PLASMA')
+                                                    ? const Color(0xFFB388FF)
                                                     : (isHero
                                                         ? Colors.redAccent
-                                                        : Colors.white)),
+                                                        : Colors.white))),
                                         shadows: const [
                                           Shadow(
                                               blurRadius: 6,

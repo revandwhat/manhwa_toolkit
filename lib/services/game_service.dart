@@ -58,7 +58,7 @@ class SkinInfo {
 
   final String id;
   final String name;
-  final int starOverride; // 0 = keep rarity
+  final int starOverride;
   final int atk;
   final int hp;
   final int def;
@@ -96,8 +96,9 @@ class Hero {
   });
 
   final String id;
-  final String name;
-  final int star; // effective (skin-applied) rarity
+  final String name; // display name (skin renames it)
+  final String baseName; // pool name - ult lookup uses this
+  final int star;
   final int level;
   final Skill skill;
   final bool locked;
@@ -110,7 +111,6 @@ class Hero {
   final SkinInfo? skin;
   final List<SkinInfo> ownedSkins;
   final String? ultText;
-  final String baseName;
 
   static const maxLevel = 30;
   static const _basePower = {
@@ -139,10 +139,10 @@ class Hero {
     for (final s in owned) {
       if (s.id == eq) skin = s;
     }
+    final origName = j['name'] as String;
     final eff = (skin != null && skin.starOverride > 0)
         ? skin.starOverride
         : (j['star'] as num).toInt();
-    final origName = j['name'] as String;
     return Hero(
       id: j['id'] as String,
       name: skin?.name ?? origName,
@@ -208,8 +208,8 @@ class HitEvent {
 
   final String attackerId;
   final String targetId;
-  final String attackerName;
   final String targetName;
+  final String attackerName;
   final int dmg;
   final bool crit;
   final int heal;
@@ -223,6 +223,80 @@ class RoundEvent {
   final List<HitEvent> hits;
 }
 
+class UltConfig {
+  UltConfig({
+    required this.dmgMul,
+    required this.aoe,
+    required this.fireRound,
+    this.assetUrl,
+    this.incant1,
+    this.incant2,
+    this.shout,
+    this.chargeCost = 100,
+    this.plasmaRounds = 0,
+  });
+
+  final double dmgMul;
+  final bool aoe;
+  final int fireRound;
+  final String? assetUrl;
+  final String? incant1;
+  final String? incant2;
+  final String? shout;
+  final int chargeCost;
+  final int plasmaRounds;
+
+  factory UltConfig.fromJson(Map<String, dynamic> j) => UltConfig(
+        dmgMul: (j['dmg_mul'] as num?)?.toDouble() ?? 3.0,
+        aoe: (j['aoe'] as bool?) ?? false,
+        fireRound: (j['fire_round'] as num?)?.toInt() ?? 2,
+        assetUrl: j['asset_url'] as String?,
+        incant1: j['incant1'] as String?,
+        incant2: j['incant2'] as String?,
+        shout: j['shout'] as String?,
+        chargeCost: (j['charge_cost'] as num?)?.toInt() ?? 100,
+        plasmaRounds: (j['plasma_rounds'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class UltHit {
+  const UltHit({
+    required this.targetId,
+    required this.targetName,
+    required this.dmg,
+    required this.ko,
+    required this.hpAfter,
+  });
+
+  final String targetId;
+  final String targetName;
+  final int dmg;
+  final bool ko;
+  final int hpAfter;
+}
+
+class UltEvent {
+  const UltEvent({
+    required this.round,
+    required this.heroId,
+    required this.heroName,
+    this.assetUrl,
+    required this.targets,
+    this.incant1,
+    this.incant2,
+    this.shout,
+  });
+
+  final int round;
+  final String heroId;
+  final String heroName;
+  final String? assetUrl;
+  final List<UltHit> targets;
+  final String? incant1;
+  final String? incant2;
+  final String? shout;
+}
+
 class BattleResult {
   const BattleResult({
     required this.win,
@@ -234,6 +308,8 @@ class BattleResult {
     required this.comboNotes,
     this.roomPicture,
     this.ults = const [],
+    this.chargeMap = const {},
+    this.chargeCost = 100,
   });
 
   final bool win;
@@ -245,12 +321,21 @@ class BattleResult {
   final List<String> comboNotes;
   final String? roomPicture;
   final List<UltEvent> ults;
+  final Map<String, double> chargeMap;
+  final int chargeCost;
 }
 
 class LeaderRow {
   LeaderRow({required this.username, required this.floor});
   final String username;
   final int floor;
+}
+
+Uint8List _toPng(Uint8List bytes) {
+  final im = img.decodeImage(bytes);
+  if (im == null) throw Exception('Bad image');
+  final small = img.copyResize(im, width: 256);
+  return Uint8List.fromList(img.encodePng(small));
 }
 
 int _avgColor(Uint8List bytes) {
@@ -274,63 +359,6 @@ int _avgColor(Uint8List bytes) {
       .withValue(hsv.value < 0.55 ? 0.55 : hsv.value)
       .toColor()
       .toARGB32();
-}
-
-Uint8List _toPng(Uint8List bytes) {
-  final im = img.decodeImage(bytes);
-  if (im == null) throw Exception('Bad image');
-  final small = img.copyResize(im, width: 256);
-  return Uint8List.fromList(img.encodePng(small));
-}
-
-class UltConfig {
-  UltConfig(
-      {required this.dmgMul,
-      required this.aoe,
-      required this.fireRound,
-      this.assetUrl});
-
-  final double dmgMul; // 3.0 = 300% of ATK
-  final bool aoe; // all enemies, or lowest-HP
-  final int fireRound;
-  final String? assetUrl; // PNG / GIF (GIF animates by itself)
-
-  factory UltConfig.fromJson(Map<String, dynamic> j) => UltConfig(
-        dmgMul: (j['dmg_mul'] as num?)?.toDouble() ?? 3.0,
-        aoe: (j['aoe'] as bool?) ?? false,
-        fireRound: (j['fire_round'] as num?)?.toInt() ?? 2,
-        assetUrl: j['asset_url'] as String?,
-      );
-}
-
-class UltHit {
-  const UltHit(
-      {required this.targetId,
-      required this.targetName,
-      required this.dmg,
-      required this.ko,
-      required this.hpAfter});
-
-  final String targetId;
-  final String targetName;
-  final int dmg;
-  final bool ko;
-  final int hpAfter;
-}
-
-class UltEvent {
-  const UltEvent(
-      {required this.round,
-      required this.heroId,
-      required this.heroName,
-      this.assetUrl,
-      required this.targets});
-
-  final int round;
-  final String heroId;
-  final String heroName;
-  final String? assetUrl;
-  final List<UltHit> targets;
 }
 
 class GameService {
@@ -382,6 +410,24 @@ class GameService {
     }
     if (team.length == 5) notes.add('Full team of 5: +10% damage');
     return notes;
+  }
+
+  static int _chargeOf(List<Hero> team) {
+    // Inconsistent gain: base varies, luck, damage-taken bonus, level flavor.
+    var total = 0;
+    for (final h in team) {
+      var c = 0.0;
+      c += 6 + _chaos(h.id.hashCode, 0) * 3; // 6-9 base
+      c += (h.level / 6).clamp(0.0, 5.0); // level helps a little
+      if (h.skill.kind == 'guard') c += 2; // tanks charge slower
+      total += c.round();
+    }
+    return (total / max(1, team.length)).round();
+  }
+
+  static double _chaos(int seed, int salt) {
+    final v = sin(seed * 12.9898 + salt * 78.233) * 43758.5453;
+    return v - v.floorToDouble();
   }
 
   SupabaseClient get _sb => Supabase.instance.client;
@@ -639,7 +685,12 @@ class GameService {
       {required double dmgMul,
       required bool aoe,
       required int fireRound,
-      String? assetUrl}) async {
+      String? assetUrl,
+      String? incant1,
+      String? incant2,
+      String? shout,
+      int plasmaRounds = 0,
+      int chargeCost = 100}) async {
     await _sb.rpc('set_hero_ult_config', params: {
       'p_name': name.trim(),
       'p_cfg': {
@@ -647,6 +698,11 @@ class GameService {
         'aoe': aoe,
         'fire_round': fireRound,
         'asset_url': assetUrl,
+        'incant1': incant1,
+        'incant2': incant2,
+        'shout': shout,
+        'plasma_rounds': plasmaRounds,
+        'charge_cost': chargeCost,
       },
     });
   }
@@ -779,15 +835,38 @@ class GameService {
     final events = <RoundEvent>[];
     final ults = <UltEvent>[];
     final fired = <String>{};
+    final teamCharge = <String, double>{};
+    for (final h in t) {
+      teamCharge[h.id] = _chargeOf(t).toDouble();
+    }
+    final plasma = <int, int>{}; // enemyIndex -> dmg/round remaining ticks
+    var cost = 100;
+    for (final h in t) {
+      final c = ultCfg[h.baseName];
+      if (c != null) cost = c.chargeCost;
+    }
     var round = 1;
     while (round <= 40) {
       final hits = <HitEvent>[];
 
-      // ultimates fire at the start of their round, pierce DEF
+      // charge accrues inconsistently each round (base + luck + hits taken)
+      for (var i = 0; i < t.length; i++) {
+        if (!hAlive[i] || fired.contains(t[i].id)) continue;
+        final cfg = ultCfg[t[i].baseName];
+        if (cfg == null) continue;
+        teamCharge[t[i].id] = teamCharge[t[i].id]! +
+            6 +
+            _chaos(t[i].id.hashCode, round) * 5 +
+            _chaos(t[i].id.hashCode, round + 77) * 2;
+      }
+
+      // ultimates fire when the meter is full (pierces DEF)
       for (var i = 0; i < t.length; i++) {
         if (!hAlive[i]) continue;
         final cfg = ultCfg[t[i].baseName];
-        if (cfg == null || fired.contains(t[i].id) || cfg.fireRound != round) {
+        if (cfg == null ||
+            fired.contains(t[i].id) ||
+            teamCharge[t[i].id]! < cfg.chargeCost) {
           continue;
         }
         fired.add(t[i].id);
@@ -810,16 +889,25 @@ class GameService {
           ));
         }
 
+        final plasmaDmg = (t[i].atk * 0.35).round();
         if (cfg.aoe) {
           for (var j = 0; j < eF.length; j++) {
             hit(j);
+            if (cfg.plasmaRounds > 0 && eAlive[j]) {
+              plasma[j] = plasmaDmg;
+            }
           }
         } else {
           var ti = -1;
           for (var j = 0; j < eF.length; j++) {
             if (eAlive[j] && (ti == -1 || eHp[j] < eHp[ti])) ti = j;
           }
-          if (ti != -1) hit(ti);
+          if (ti != -1) {
+            hit(ti);
+            if (cfg.plasmaRounds > 0 && eAlive[ti]) {
+              plasma[ti] = plasmaDmg;
+            }
+          }
         }
         if (targets.isNotEmpty) {
           ults.add(UltEvent(
@@ -899,6 +987,41 @@ class GameService {
         ));
       }
 
+      // plasma: continuous damage until it burns out
+      for (final e in plasma.entries.toList()) {
+        final j = e.key;
+        if (!eAlive[j]) continue;
+        final d = e.value;
+        eHp[j] -= d;
+        final ko = eHp[j] <= 0;
+        if (ko) eAlive[j] = false;
+        hits.add(HitEvent(
+          attackerId: 'PLASMA',
+          targetId: eF[j].id,
+          attackerName: 'Plasma',
+          targetName: eF[j].name,
+          dmg: d,
+          crit: false,
+          heal: 0,
+          ko: ko,
+          targetHpAfter: max(0, eHp[j]),
+        ));
+      }
+      plasma.removeWhere((_, v) => v <= 0);
+
+      // taking damage feeds the meter (the punished hero charges faster)
+      for (final h in hits) {
+        if (h.attackerId.startsWith('H') && !h.attackerId.startsWith('PLASMA')) {
+          continue;
+        }
+        final id = h.targetId.replaceFirst('H', '');
+        final idx = int.tryParse(id);
+        if (idx != null && idx < t.length && hAlive[idx]) {
+          teamCharge[t[idx].id] =
+              teamCharge[t[idx].id]! + 3 + _chaos(t[idx].id.hashCode, round) * 3;
+        }
+      }
+
       if (hits.isNotEmpty) events.add(RoundEvent(round: round, hits: hits));
       if (!eAlive.any((x) => x) || !hAlive.any((x) => x)) break;
       round++;
@@ -921,6 +1044,8 @@ class GameService {
       comboNotes: notes,
       roomPicture: room,
       ults: ults,
+      chargeMap: teamCharge,
+      chargeCost: cost,
     );
   }
 }

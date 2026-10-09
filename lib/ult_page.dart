@@ -17,7 +17,7 @@ class _UltCinematicPageState extends State<UltCinematicPage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 2500),
+    duration: const Duration(milliseconds: 4400),
   )..forward();
 
   late final List<Offset> _stars;
@@ -32,7 +32,7 @@ class _UltCinematicPageState extends State<UltCinematicPage>
         Offset(0.05 + rng.nextDouble() * 0.9, 0.08 + rng.nextDouble() * 0.84),
     ];
     _phases = [for (var i = 0; i < 18; i++) rng.nextDouble() * 6.28];
-    Future.delayed(const Duration(milliseconds: 2650), () {
+    Future.delayed(const Duration(milliseconds: 4400), () {
       if (mounted && Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }
@@ -176,6 +176,46 @@ class _UltCinematicPageState extends State<UltCinematicPage>
                       .withValues(alpha: (1 - impact) * 0.30),
                 ),
 
+              // incantation dialogue + portrait
+              if (widget.event.incant1 != null && t < 0.32)
+                Positioned(
+                  bottom: 40,
+                  left: 16,
+                  right: 16,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (widget.event.assetUrl != null)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Container(
+                            width: 72,
+                            height: 72,
+                            margin: const EdgeInsets.only(bottom: 8),
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                  color: const Color(0xFF7B2FF7), width: 2),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: Image.network(
+                                widget.event.assetUrl!,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) =>
+                                    const SizedBox.shrink(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      _dialogueLine(
+                          widget.event.incant1, t / 0.13, 0, 0.13),
+                      _dialogueLine(
+                          widget.event.incant2, t / 0.24, 0.13, 0.24),
+                    ],
+                  ),
+                ),
+
               // damage report
               if (impacting)
                 Positioned(
@@ -216,6 +256,31 @@ class _UltCinematicPageState extends State<UltCinematicPage>
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _dialogueLine(
+      String? text, double reveal, double w0, double w1) {
+    if (text == null) return const SizedBox.shrink();
+    final local = ((reveal - w0) / (w1 - w0 + 0.001)).clamp(0.0, 1.0);
+    if (local <= 0) return const SizedBox.shrink();
+    final chars = (text.length * local).round().clamp(0, text.length);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.75),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFF7B2FF7)),
+        ),
+        child: Text(
+          text.substring(0, chars) + (local < 1 ? '▌' : ''),
+          style: const TextStyle(
+              color: Colors.white, fontSize: 15, height: 1.3),
+        ),
       ),
     );
   }

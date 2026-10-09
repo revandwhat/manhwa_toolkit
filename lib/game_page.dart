@@ -81,7 +81,12 @@ class _GamePageState extends State<GamePage>
   final _ucDmg = TextEditingController(text: '300');
   final _ucRound = TextEditingController(text: '2');
   final _ucUrl = TextEditingController();
+  final _ucInc1 = TextEditingController();
+  final _ucInc2 = TextEditingController();
+  final _ucShout = TextEditingController();
+  final _ucPlasma = TextEditingController();
   bool _ucAoe = false;
+  final _ucCost = TextEditingController(text: '100');
   final _skName = TextEditingController();
   final _skVal = TextEditingController();
   String _skKindA = 'damage';
@@ -140,6 +145,10 @@ class _GamePageState extends State<GamePage>
     _ucDmg.dispose();
     _ucRound.dispose();
     _ucUrl.dispose();
+    _ucInc1.dispose();
+    _ucInc2.dispose();
+    _ucShout.dispose();
+    _ucPlasma.dispose();
     super.dispose();
   }
 
@@ -1809,13 +1818,66 @@ class _GamePageState extends State<GamePage>
                       assetUrl: _ucUrl.text.trim().isEmpty
                           ? null
                           : _ucUrl.text.trim(),
+                      incant1: _ucInc1.text.trim().isEmpty
+                          ? null
+                          : _ucInc1.text.trim(),
+                      incant2: _ucInc2.text.trim().isEmpty
+                          ? null
+                          : _ucInc2.text.trim(),
+                      shout: _ucShout.text.trim().isEmpty
+                          ? null
+                          : _ucShout.text.trim(),
+                      plasmaRounds:
+                          int.tryParse(_ucPlasma.text.trim()) ?? 0,
+                      chargeCost:
+                          int.tryParse(_ucCost.text.trim()) ?? 100,
                     ),
                     'Ultimate config saved',
                   );
                 },
           child: const Text('Save config (makes it real)'),
+
         ),
-        const Divider(height: 24),
+
+        const SizedBox(height: 8),
+        TextField(
+            controller: _ucInc1,
+            decoration: const InputDecoration(
+                labelText: 'Incantation line 1 (optional)',
+                hintText: 'Jutsu Shiki Junten: Ao...',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _ucInc2,
+            decoration: const InputDecoration(
+                labelText: 'Incantation line 2 (optional)',
+                hintText: 'Jutsu Shiki Hanten: Aka...',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _ucShout,
+            decoration: const InputDecoration(
+                labelText: 'The shout (optional)',
+                hintText: 'KYOSHIKI, MURASAKI!',
+                border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+                controller: _ucPlasma,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'Plasma ticks (0 = none)',
+                    border: OutlineInputBorder()))),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+                controller: _ucCost,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: 'Charge cost (100 = ~5 rounds)',
+                    border: OutlineInputBorder()))),
+        ]),        const Divider(height: 24),
         Text('Dungeon room art',
             style: Theme.of(context).textTheme.labelLarge),
         const SizedBox(height: 8),
